@@ -42,7 +42,7 @@ class ExtractionAgent:
 
         self._agent = Agent(
             model_name,
-            result_type=ExtractedData,
+            output_type=ExtractedData,
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
         )
 
