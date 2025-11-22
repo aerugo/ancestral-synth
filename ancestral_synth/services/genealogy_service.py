@@ -15,7 +15,7 @@ from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.config import settings
 from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
-from ancestral_synth.utils.timing import VerboseTimer
+from ancestral_synth.utils.timing import VerboseTimer, set_verbose_log_callback
 from ancestral_synth.domain.enums import (
     EventType,
     NoteCategory,
@@ -76,6 +76,12 @@ class GenealogyService:
         )
         self._timer = VerboseTimer(enabled=verbose)
 
+        # Set up global verbose logging callback for retry module
+        if verbose:
+            set_verbose_log_callback(self._timer.log)
+        else:
+            set_verbose_log_callback(None)
+
     @property
     def timer(self) -> VerboseTimer:
         """Get the verbose timer for external access."""
@@ -119,6 +125,12 @@ class GenealogyService:
         # Process this person
         return await self._process_person(person_id)
 
+    async def _acquire_rate_limit(self, operation: str) -> None:
+        """Acquire rate limit and log if we had to wait."""
+        wait_time = await self._rate_limiter.acquire()
+        if wait_time > 0.1:  # Only log waits over 100ms
+            self._timer.log(f"Rate limit: waited {wait_time:.1f}s before {operation}")
+
     async def _create_seed_person(self) -> Person:
         """Create a new seed person from scratch."""
         context = create_seed_context()
@@ -126,14 +138,14 @@ class GenealogyService:
         # Generate biography (rate limited)
         logger.info(f"Generating biography for seed: {context.given_name} {context.surname}")
         self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
-        await self._rate_limiter.acquire()
-        with self._timer.time_operation("Biography generation"):
+        await self._acquire_rate_limit("biography generation")
+        with self._timer.time_operation("Biography generation (LLM call)"):
             biography = await self._biography_agent.generate(context)
         self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
-        await self._rate_limiter.acquire()
-        with self._timer.time_operation("Data extraction"):
+        await self._acquire_rate_limit("data extraction")
+        with self._timer.time_operation("Data extraction (LLM call)"):
             extracted = await self._extraction_agent.extract(biography.content)
         self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
@@ -202,14 +214,14 @@ class GenealogyService:
         self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
         if relatives:
             self._timer.log(f"Context includes {len(relatives)} known relative(s)")
-        await self._rate_limiter.acquire()
-        with self._timer.time_operation("Biography generation"):
+        await self._acquire_rate_limit("biography generation")
+        with self._timer.time_operation("Biography generation (LLM call)"):
             biography = await self._biography_agent.generate(context)
         self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
-        await self._rate_limiter.acquire()
-        with self._timer.time_operation("Data extraction"):
+        await self._acquire_rate_limit("data extraction")
+        with self._timer.time_operation("Data extraction (LLM call)"):
             extracted = await self._extraction_agent.extract_with_hints(
                 biography.content,
                 expected_name=f"{db_person.given_name} {db_person.surname}",
@@ -429,8 +441,8 @@ class GenealogyService:
 
             # Check duplicates (rate limited)
             self._timer.log(f"Checking {len(candidate_summaries)} candidate(s) for duplicate: {reference.name}")
-            await self._rate_limiter.acquire()
-            with self._timer.time_operation("Deduplication check"):
+            await self._acquire_rate_limit("deduplication check")
+            with self._timer.time_operation("Deduplication check (LLM call)"):
                 dedup_result = await self._dedup_agent.check_duplicate(
                     new_summary, candidate_summaries
                 )

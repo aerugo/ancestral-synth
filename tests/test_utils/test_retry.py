@@ -461,10 +461,10 @@ class TestLLMRetry:
     @pytest.mark.asyncio
     async def test_on_retry_callback(self) -> None:
         """Should call on_retry callback."""
-        retry_info: list[tuple[int, Exception]] = []
+        retry_info: list[tuple[int, Exception, float]] = []
 
-        def on_retry(attempt: int, error: Exception) -> None:
-            retry_info.append((attempt, error))
+        def on_retry(attempt: int, error: Exception, delay: float) -> None:
+            retry_info.append((attempt, error, delay))
 
         @llm_retry(
             RetryConfig(max_retries=2, base_delay=0.01, jitter=False),
@@ -480,3 +480,4 @@ class TestLLMRetry:
         assert len(retry_info) == 2
         assert retry_info[0][0] == 1
         assert retry_info[1][0] == 2
+        assert retry_info[0][2] >= 0  # delay is non-negative

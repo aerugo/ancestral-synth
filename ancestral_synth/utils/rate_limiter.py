@@ -41,6 +41,7 @@ class RateLimiter:
         self._tokens = 1.0  # Start with one token available
         self._last_update = time.monotonic()
         self._lock = asyncio.Lock()
+        self._last_wait_time: float = 0.0
 
     @property
     def available_tokens(self) -> float:
@@ -49,16 +50,25 @@ class RateLimiter:
         tokens = self._tokens + elapsed * self._config.requests_per_second
         return min(tokens, 1.0)  # Cap at 1 token max
 
+    @property
+    def last_wait_time(self) -> float:
+        """Get the last wait time in seconds."""
+        return self._last_wait_time
+
     def reset(self) -> None:
         """Reset the rate limiter to initial state."""
         self._tokens = 1.0
         self._last_update = time.monotonic()
+        self._last_wait_time = 0.0
 
-    async def acquire(self) -> None:
+    async def acquire(self) -> float:
         """Acquire permission to make a request.
 
         This method will block until a token is available,
         ensuring the rate limit is respected.
+
+        Returns:
+            The time spent waiting in seconds (0 if no wait needed).
         """
         async with self._lock:
             # Update token count based on elapsed time
@@ -76,9 +86,13 @@ class RateLimiter:
                 await asyncio.sleep(wait_time)
                 self._tokens = 0.0
                 self._last_update = time.monotonic()
+                self._last_wait_time = wait_time
+                return wait_time
             else:
                 # Consume a token
                 self._tokens -= 1.0
+                self._last_wait_time = 0.0
+                return 0.0
 
 
 def rate_limited(
