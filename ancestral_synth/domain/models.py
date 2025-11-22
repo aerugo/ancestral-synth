@@ -146,13 +146,10 @@ class Note(BaseModel):
 class ChildLink(BaseModel):
     """A parent-child relationship link."""
 
+    model_config = {"frozen": True}
+
     parent_id: UUID = Field(description="ID of the parent")
     child_id: UUID = Field(description="ID of the child")
-
-    class Config:
-        """Pydantic configuration."""
-
-        frozen = True  # Immutable
 
 
 class Biography(BaseModel):
