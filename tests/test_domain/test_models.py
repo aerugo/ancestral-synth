@@ -18,6 +18,7 @@ from ancestral_synth.domain.models import (
     ChildLink,
     Event,
     ExtractedData,
+    ExtractedEvent,
     Note,
     Person,
     PersonReference,
@@ -394,10 +395,9 @@ class TestExtractedData:
 
     def test_extracted_data_with_events(self) -> None:
         """Should include extracted events."""
-        event = Event(
+        event = ExtractedEvent(
             event_type=EventType.BIRTH,
             description="Born in Boston",
-            primary_person_id=uuid4(),
         )
 
         data = ExtractedData(

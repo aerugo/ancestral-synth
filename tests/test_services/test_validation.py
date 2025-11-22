@@ -4,9 +4,8 @@ from datetime import date
 
 import pytest
 
-from ancestral_synth.domain.enums import Gender, RelationshipType
-from ancestral_synth.domain.models import Event, ExtractedData, PersonReference
-from ancestral_synth.domain.enums import EventType
+from ancestral_synth.domain.enums import Gender, RelationshipType, EventType
+from ancestral_synth.domain.models import ExtractedData, ExtractedEvent, PersonReference
 from ancestral_synth.services.validation import ValidationResult, Validator
 
 
@@ -259,11 +258,10 @@ class TestValidateExtractedData:
             gender=Gender.MALE,
             birth_date=date(1950, 1, 1),
             events=[
-                Event(
+                ExtractedEvent(
                     event_type=EventType.GRADUATION,
                     event_date=date(1940, 6, 1),  # Before birth
                     description="Graduated college",
-                    primary_person_id="00000000-0000-0000-0000-000000000000",  # type: ignore[arg-type]
                 ),
             ],
         )
@@ -281,11 +279,10 @@ class TestValidateExtractedData:
             birth_date=date(1950, 1, 1),
             death_date=date(2000, 1, 1),
             events=[
-                Event(
+                ExtractedEvent(
                     event_type=EventType.RETIREMENT,
                     event_date=date(2010, 6, 1),  # After death
                     description="Retired",
-                    primary_person_id="00000000-0000-0000-0000-000000000000",  # type: ignore[arg-type]
                 ),
             ],
         )
@@ -302,11 +299,10 @@ class TestValidateExtractedData:
             gender=Gender.MALE,
             birth_date=date(1950, 1, 1),
             events=[
-                Event(
+                ExtractedEvent(
                     event_type=EventType.IMMIGRATION,
                     event_year=1940,  # Before birth
                     description="Immigrated",
-                    primary_person_id="00000000-0000-0000-0000-000000000000",  # type: ignore[arg-type]
                 ),
             ],
         )
