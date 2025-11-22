@@ -1,5 +1,9 @@
 """Command-line interface for Ancestral Synth."""
 
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env file before any other imports that need API keys
+
 import asyncio
 from pathlib import Path
 
