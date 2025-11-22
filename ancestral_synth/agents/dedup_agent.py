@@ -87,7 +87,7 @@ class DedupAgent:
     async def _run_llm(self, prompt: str) -> DedupResult:
         """Run LLM with retry logic."""
         result = await self._agent.run(prompt)
-        return result.data
+        return result.output
 
     def _build_prompt(
         self,

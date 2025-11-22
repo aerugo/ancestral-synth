@@ -77,7 +77,7 @@ class BiographyAgent:
         """
         prompt = self._build_prompt(context)
         result = await self._agent.run(prompt)
-        return result.data
+        return result.output
 
     def _build_prompt(self, context: BiographyContext) -> str:
         """Build the user prompt from context."""
