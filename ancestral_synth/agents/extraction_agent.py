@@ -65,7 +65,7 @@ class ExtractionAgent:
 Return the extracted data as structured JSON following the schema."""
 
         result = await self._agent.run(prompt)
-        return result.data
+        return result.output
 
     @llm_retry()
     async def extract_with_hints(
@@ -98,4 +98,4 @@ Return the extracted data as structured JSON following the schema."""
 
         prompt = "\n".join(prompt_parts)
         result = await self._agent.run(prompt)
-        return result.data
+        return result.output
