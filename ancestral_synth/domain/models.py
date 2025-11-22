@@ -159,6 +159,44 @@ class Biography(BaseModel):
     word_count: int = Field(description="Actual word count")
 
 
+class ExtractedEvent(BaseModel):
+    """An event extracted from a biography (without UUIDs - those are added later).
+
+    This model is used for LLM extraction. UUIDs are generated when converting
+    to the full Event model for storage.
+    """
+
+    event_type: EventType = Field(description="Type of event")
+
+    # When
+    event_date: date | None = Field(default=None, description="Date of the event")
+    event_year: int | None = Field(default=None, description="Year if exact date unknown")
+
+    # Where
+    location: str | None = Field(default=None, description="Location of the event")
+
+    # What
+    description: str = Field(description="Description of the event")
+
+    def to_event(self, primary_person_id: UUID) -> "Event":
+        """Convert to a full Event model with generated UUIDs.
+
+        Args:
+            primary_person_id: The ID of the person this event is about.
+
+        Returns:
+            A full Event model with UUIDs.
+        """
+        return Event(
+            event_type=self.event_type,
+            event_date=self.event_date,
+            event_year=self.event_year,
+            location=self.location,
+            description=self.description,
+            primary_person_id=primary_person_id,
+        )
+
+
 class ExtractedData(BaseModel):
     """Structured data extracted from a biography."""
 
@@ -198,8 +236,8 @@ class ExtractedData(BaseModel):
         description="Other relatives (aunts, uncles, cousins, etc.)",
     )
 
-    # Events
-    events: list[Event] = Field(
+    # Events (without UUIDs - those are generated when converting to Event)
+    events: list[ExtractedEvent] = Field(
         default_factory=list,
         description="Life events extracted from the biography",
     )

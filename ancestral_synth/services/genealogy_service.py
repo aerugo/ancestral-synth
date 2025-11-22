@@ -365,9 +365,9 @@ class GenealogyService:
             # Estimate generation based on relationship context
             await self._resolve_person_reference(session, other_ref, person.generation)
 
-        # Process events
-        for event in extracted.events:
-            event.primary_person_id = person.id
+        # Process events (convert ExtractedEvent to Event with person's ID)
+        for extracted_event in extracted.events:
+            event = extracted_event.to_event(person.id)
             await event_repo.create(event)
 
         # Process notes
