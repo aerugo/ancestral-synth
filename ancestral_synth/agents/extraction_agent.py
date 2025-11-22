@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import settings
 from ancestral_synth.domain.models import ExtractedData
+from ancestral_synth.utils.retry import llm_retry
 
 
 EXTRACTION_SYSTEM_PROMPT = """You are an expert genealogist and data extraction specialist.
@@ -45,6 +46,7 @@ class ExtractionAgent:
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
         )
 
+    @llm_retry()
     async def extract(self, biography: str) -> ExtractedData:
         """Extract structured data from a biography.
 
@@ -65,6 +67,7 @@ Return the extracted data as structured JSON following the schema."""
         result = await self._agent.run(prompt)
         return result.data
 
+    @llm_retry()
     async def extract_with_hints(
         self,
         biography: str,

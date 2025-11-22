@@ -213,3 +213,30 @@ class QueryService:
                 return None
 
             return person_repo.to_domain(db_person)
+
+    async def get_statistics(self) -> dict:
+        """Get statistics about the dataset.
+
+        Returns:
+            Dictionary with dataset statistics.
+        """
+        from ancestral_synth.domain.enums import PersonStatus
+        from ancestral_synth.persistence.repositories import QueueRepository
+
+        async with self._db.session() as session:
+            person_repo = PersonRepository(session)
+            queue_repo = QueueRepository(session)
+
+            total = await person_repo.count()
+            complete = await person_repo.count(PersonStatus.COMPLETE)
+            pending = await person_repo.count(PersonStatus.PENDING)
+            queued = await person_repo.count(PersonStatus.QUEUED)
+            queue_size = await queue_repo.count()
+
+            return {
+                "total_persons": total,
+                "complete": complete,
+                "pending": pending,
+                "queued": queued,
+                "queue_size": queue_size,
+            }

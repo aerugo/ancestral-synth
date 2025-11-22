@@ -43,6 +43,22 @@ class Settings(BaseSettings):
         description="Number of persons to process in a batch",
     )
 
+    # Rate limiting
+    llm_requests_per_minute: int = Field(
+        default=60,
+        description="Maximum LLM API requests per minute",
+    )
+
+    # Retry settings
+    llm_max_retries: int = Field(
+        default=3,
+        description="Maximum number of retry attempts for LLM calls",
+    )
+    llm_retry_base_delay: float = Field(
+        default=2.0,
+        description="Base delay in seconds for exponential backoff",
+    )
+
     # Sampling
     forest_fire_probability: float = Field(
         default=0.3,

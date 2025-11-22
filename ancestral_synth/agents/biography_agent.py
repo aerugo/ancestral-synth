@@ -6,6 +6,7 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import settings
 from ancestral_synth.domain.models import Biography, PersonSummary
+from ancestral_synth.utils.retry import llm_retry
 
 
 @dataclass
@@ -64,6 +65,7 @@ class BiographyAgent:
             system_prompt=BIOGRAPHY_SYSTEM_PROMPT,
         )
 
+    @llm_retry()
     async def generate(self, context: BiographyContext) -> Biography:
         """Generate a biography for a person.
 

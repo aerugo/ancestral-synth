@@ -14,6 +14,7 @@ from ancestral_synth.agents.biography_agent import (
 from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.config import settings
+from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
 from ancestral_synth.domain.enums import (
     EventType,
     NoteCategory,
@@ -50,6 +51,7 @@ class GenealogyService:
         extraction_agent: ExtractionAgent | None = None,
         dedup_agent: DedupAgent | None = None,
         validator: Validator | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         """Initialize the genealogy service.
 
@@ -59,12 +61,16 @@ class GenealogyService:
             extraction_agent: Agent for extracting data.
             dedup_agent: Agent for deduplication.
             validator: Validator for genealogical plausibility.
+            rate_limiter: Rate limiter for LLM API calls.
         """
         self._db = db
         self._biography_agent = biography_agent or BiographyAgent()
         self._extraction_agent = extraction_agent or ExtractionAgent()
         self._dedup_agent = dedup_agent or DedupAgent()
         self._validator = validator or Validator()
+        self._rate_limiter = rate_limiter or RateLimiter(
+            RateLimitConfig(requests_per_minute=settings.llm_requests_per_minute)
+        )
 
     async def process_next(self) -> Person | None:
         """Process the next person in the queue.
@@ -108,11 +114,13 @@ class GenealogyService:
         """Create a new seed person from scratch."""
         context = create_seed_context()
 
-        # Generate biography
+        # Generate biography (rate limited)
         logger.info(f"Generating biography for seed: {context.given_name} {context.surname}")
+        await self._rate_limiter.acquire()
         biography = await self._biography_agent.generate(context)
 
-        # Extract data
+        # Extract data (rate limited)
+        await self._rate_limiter.acquire()
         extracted = await self._extraction_agent.extract(biography.content)
 
         # Validate
@@ -169,11 +177,13 @@ class GenealogyService:
                 generation=db_person.generation,
             )
 
-        # Generate biography
+        # Generate biography (rate limited)
         logger.info(f"Generating biography for: {db_person.given_name} {db_person.surname}")
+        await self._rate_limiter.acquire()
         biography = await self._biography_agent.generate(context)
 
-        # Extract data
+        # Extract data (rate limited)
+        await self._rate_limiter.acquire()
         extracted = await self._extraction_agent.extract_with_hints(
             biography.content,
             expected_name=f"{db_person.given_name} {db_person.surname}",
@@ -384,6 +394,8 @@ class GenealogyService:
                 person_repo.to_summary(c[0]) for c in good_candidates[:5]
             ]
 
+            # Check duplicates (rate limited)
+            await self._rate_limiter.acquire()
             dedup_result = await self._dedup_agent.check_duplicate(
                 new_summary, candidate_summaries
             )

@@ -5,6 +5,7 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import settings
 from ancestral_synth.domain.models import PersonSummary
+from ancestral_synth.utils.retry import llm_retry
 
 
 class DedupResult(BaseModel):
@@ -80,6 +81,11 @@ class DedupAgent:
             )
 
         prompt = self._build_prompt(new_person, candidates)
+        return await self._run_llm(prompt)
+
+    @llm_retry()
+    async def _run_llm(self, prompt: str) -> DedupResult:
+        """Run LLM with retry logic."""
         result = await self._agent.run(prompt)
         return result.data
 
