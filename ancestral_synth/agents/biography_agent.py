@@ -61,7 +61,7 @@ class BiographyAgent:
 
         self._agent = Agent(
             model_name,
-            result_type=Biography,
+            output_type=Biography,
             system_prompt=BIOGRAPHY_SYSTEM_PROMPT,
         )
 

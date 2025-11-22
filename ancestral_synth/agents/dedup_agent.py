@@ -54,7 +54,7 @@ class DedupAgent:
 
         self._agent = Agent(
             model_name,
-            result_type=DedupResult,
+            output_type=DedupResult,
             system_prompt=DEDUP_SYSTEM_PROMPT,
         )
 
