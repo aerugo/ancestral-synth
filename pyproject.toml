@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "sqlmodel>=0.0.22",
     "aiosqlite>=0.20",
+    "greenlet>=3.0",
     "loguru>=0.7",
     "typer>=0.15",
     "rich>=13.9",
