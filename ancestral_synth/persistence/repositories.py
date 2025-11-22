@@ -1,0 +1,336 @@
+"""Repository classes for data access."""
+
+from uuid import UUID
+
+from sqlalchemy import func
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from ancestral_synth.domain.enums import PersonStatus
+from ancestral_synth.domain.models import ChildLink, Event, Note, Person, PersonSummary
+from ancestral_synth.persistence.tables import (
+    ChildLinkTable,
+    EventParticipantTable,
+    EventTable,
+    NoteReferenceTable,
+    NoteTable,
+    PersonTable,
+    QueueEntryTable,
+)
+
+
+class PersonRepository:
+    """Repository for Person operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, person: Person) -> PersonTable:
+        """Create a new person record."""
+        db_person = PersonTable(
+            id=person.id,
+            status=person.status,
+            given_name=person.given_name,
+            surname=person.surname,
+            maiden_name=person.maiden_name,
+            nickname=person.nickname,
+            gender=person.gender,
+            birth_date=person.birth_date,
+            birth_place=person.birth_place,
+            death_date=person.death_date,
+            death_place=person.death_place,
+            biography=person.biography,
+            generation=person.generation,
+        )
+        self._session.add(db_person)
+        await self._session.flush()
+        return db_person
+
+    async def get_by_id(self, person_id: UUID) -> PersonTable | None:
+        """Get a person by ID."""
+        return await self._session.get(PersonTable, person_id)
+
+    async def get_by_name(self, given_name: str, surname: str) -> list[PersonTable]:
+        """Find people by name."""
+        stmt = select(PersonTable).where(
+            PersonTable.given_name == given_name,
+            PersonTable.surname == surname,
+        )
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    async def get_by_status(self, status: PersonStatus) -> list[PersonTable]:
+        """Get all people with a given status."""
+        stmt = select(PersonTable).where(PersonTable.status == status)
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    async def update(self, person_id: UUID, **kwargs) -> PersonTable | None:  # noqa: ANN003
+        """Update a person record."""
+        db_person = await self.get_by_id(person_id)
+        if db_person is None:
+            return None
+
+        for key, value in kwargs.items():
+            if hasattr(db_person, key):
+                setattr(db_person, key, value)
+
+        self._session.add(db_person)
+        await self._session.flush()
+        return db_person
+
+    async def count(self, status: PersonStatus | None = None) -> int:
+        """Count people, optionally filtered by status."""
+        stmt = select(func.count(PersonTable.id))
+        if status is not None:
+            stmt = stmt.where(PersonTable.status == status)
+        result = await self._session.exec(stmt)
+        return result.one()
+
+    async def search_similar(
+        self,
+        given_name: str,
+        surname: str,
+        birth_year: int | None = None,
+    ) -> list[PersonTable]:
+        """Search for potentially matching people."""
+        stmt = select(PersonTable).where(
+            PersonTable.surname == surname,
+            PersonTable.given_name.ilike(f"%{given_name}%"),  # type: ignore[union-attr]
+        )
+
+        # If birth year provided, filter within a range
+        if birth_year is not None:
+            # Check if birth_date falls within a 5-year range
+            stmt = stmt.where(
+                func.strftime("%Y", PersonTable.birth_date).between(
+                    str(birth_year - 3),
+                    str(birth_year + 3),
+                )
+            )
+
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    def to_domain(self, db_person: PersonTable) -> Person:
+        """Convert a database record to a domain model."""
+        return Person(
+            id=db_person.id,
+            status=db_person.status,
+            given_name=db_person.given_name,
+            surname=db_person.surname,
+            maiden_name=db_person.maiden_name,
+            nickname=db_person.nickname,
+            gender=db_person.gender,
+            birth_date=db_person.birth_date,
+            birth_place=db_person.birth_place,
+            death_date=db_person.death_date,
+            death_place=db_person.death_place,
+            biography=db_person.biography,
+            generation=db_person.generation,
+        )
+
+    def to_summary(
+        self, db_person: PersonTable, relationship=None  # noqa: ANN001
+    ) -> PersonSummary:
+        """Convert a database record to a summary."""
+        return PersonSummary(
+            id=db_person.id,
+            full_name=f"{db_person.given_name} {db_person.surname}",
+            gender=db_person.gender,
+            birth_year=db_person.birth_date.year if db_person.birth_date else None,
+            death_year=db_person.death_date.year if db_person.death_date else None,
+            birth_place=db_person.birth_place,
+            relationship_to_subject=relationship,
+        )
+
+
+class EventRepository:
+    """Repository for Event operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, event: Event) -> EventTable:
+        """Create a new event record."""
+        db_event = EventTable(
+            id=event.id,
+            event_type=event.event_type,
+            event_date=event.event_date,
+            event_year=event.event_year,
+            location=event.location,
+            description=event.description,
+            primary_person_id=event.primary_person_id,
+        )
+        self._session.add(db_event)
+        await self._session.flush()
+
+        # Add participants
+        for person_id in event.other_person_ids:
+            participant = EventParticipantTable(
+                event_id=event.id,
+                person_id=person_id,
+            )
+            self._session.add(participant)
+
+        await self._session.flush()
+        return db_event
+
+    async def get_by_person(self, person_id: UUID) -> list[EventTable]:
+        """Get all events for a person."""
+        stmt = select(EventTable).where(EventTable.primary_person_id == person_id)
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    def to_domain(self, db_event: EventTable) -> Event:
+        """Convert a database record to a domain model."""
+        participant_ids = [p.person_id for p in db_event.participants] if db_event.participants else []
+        return Event(
+            id=db_event.id,
+            event_type=db_event.event_type,
+            event_date=db_event.event_date,
+            event_year=db_event.event_year,
+            location=db_event.location,
+            description=db_event.description,
+            primary_person_id=db_event.primary_person_id,
+            other_person_ids=participant_ids,
+        )
+
+
+class NoteRepository:
+    """Repository for Note operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, note: Note) -> NoteTable:
+        """Create a new note record."""
+        db_note = NoteTable(
+            id=note.id,
+            person_id=note.person_id,
+            category=note.category,
+            content=note.content,
+            source=note.source,
+        )
+        self._session.add(db_note)
+        await self._session.flush()
+
+        # Add references
+        for person_id in note.referenced_person_ids:
+            reference = NoteReferenceTable(
+                note_id=note.id,
+                person_id=person_id,
+            )
+            self._session.add(reference)
+
+        await self._session.flush()
+        return db_note
+
+    async def get_by_person(self, person_id: UUID) -> list[NoteTable]:
+        """Get all notes for a person."""
+        stmt = select(NoteTable).where(NoteTable.person_id == person_id)
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+
+class ChildLinkRepository:
+    """Repository for ChildLink operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, link: ChildLink) -> ChildLinkTable:
+        """Create a new child link."""
+        db_link = ChildLinkTable(
+            parent_id=link.parent_id,
+            child_id=link.child_id,
+        )
+        self._session.add(db_link)
+        await self._session.flush()
+        return db_link
+
+    async def exists(self, parent_id: UUID, child_id: UUID) -> bool:
+        """Check if a link already exists."""
+        stmt = select(ChildLinkTable).where(
+            ChildLinkTable.parent_id == parent_id,
+            ChildLinkTable.child_id == child_id,
+        )
+        result = await self._session.exec(stmt)
+        return result.first() is not None
+
+    async def get_children(self, parent_id: UUID) -> list[UUID]:
+        """Get all children of a parent."""
+        stmt = select(ChildLinkTable.child_id).where(ChildLinkTable.parent_id == parent_id)
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    async def get_parents(self, child_id: UUID) -> list[UUID]:
+        """Get all parents of a child."""
+        stmt = select(ChildLinkTable.parent_id).where(ChildLinkTable.child_id == child_id)
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+
+class QueueRepository:
+    """Repository for the creation queue."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def enqueue(self, person_id: UUID, priority: int = 0) -> QueueEntryTable:
+        """Add a person to the queue."""
+        # Check if already in queue
+        stmt = select(QueueEntryTable).where(QueueEntryTable.person_id == person_id)
+        result = await self._session.exec(stmt)
+        existing = result.first()
+
+        if existing is not None:
+            # Update priority if higher
+            if priority > existing.priority:
+                existing.priority = priority
+                self._session.add(existing)
+                await self._session.flush()
+            return existing
+
+        entry = QueueEntryTable(person_id=person_id, priority=priority)
+        self._session.add(entry)
+        await self._session.flush()
+        return entry
+
+    async def dequeue(self) -> UUID | None:
+        """Remove and return the next person from the queue."""
+        stmt = (
+            select(QueueEntryTable)
+            .order_by(col(QueueEntryTable.priority).desc(), QueueEntryTable.added_at)
+            .limit(1)
+        )
+        result = await self._session.exec(stmt)
+        entry = result.first()
+
+        if entry is None:
+            return None
+
+        person_id = entry.person_id
+        await self._session.delete(entry)
+        await self._session.flush()
+        return person_id
+
+    async def peek(self, count: int = 10) -> list[UUID]:
+        """Peek at the next entries in the queue without removing them."""
+        stmt = (
+            select(QueueEntryTable.person_id)
+            .order_by(col(QueueEntryTable.priority).desc(), QueueEntryTable.added_at)
+            .limit(count)
+        )
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    async def count(self) -> int:
+        """Count entries in the queue."""
+        stmt = select(func.count(QueueEntryTable.id))
+        result = await self._session.exec(stmt)
+        return result.one()
+
+    async def is_empty(self) -> bool:
+        """Check if the queue is empty."""
+        return await self.count() == 0
