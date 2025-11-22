@@ -7,6 +7,8 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
+from ancestral_synth.utils.timing import verbose_log
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -157,9 +159,45 @@ def is_retryable_error(error: Exception) -> bool:
     return any(pattern in error_str for pattern in RETRYABLE_ERROR_PATTERNS)
 
 
+class RetryState:
+    """State tracking for retry operations, useful for verbose logging."""
+
+    def __init__(self) -> None:
+        self.total_attempts: int = 0
+        self.total_retries: int = 0
+        self.total_delay_seconds: float = 0.0
+        self.last_error: Exception | None = None
+
+    def record_attempt(self) -> None:
+        """Record an attempt."""
+        self.total_attempts += 1
+
+    def record_retry(self, delay: float, error: Exception) -> None:
+        """Record a retry with its delay."""
+        self.total_retries += 1
+        self.total_delay_seconds += delay
+        self.last_error = error
+
+    def reset(self) -> None:
+        """Reset state for a new operation."""
+        self.total_attempts = 0
+        self.total_retries = 0
+        self.total_delay_seconds = 0.0
+        self.last_error = None
+
+
+# Global retry state for verbose logging
+_retry_state = RetryState()
+
+
+def get_retry_state() -> RetryState:
+    """Get the global retry state for verbose logging."""
+    return _retry_state
+
+
 def llm_retry(
     config: RetryConfig | None = None,
-    on_retry: Callable[[int, Exception], None] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator specifically for LLM calls with automatic error classification.
 
@@ -168,7 +206,7 @@ def llm_retry(
 
     Args:
         config: Retry configuration. Uses defaults if not provided.
-        on_retry: Optional callback called on each retry.
+        on_retry: Optional callback called on each retry with (attempt, error, delay).
 
     Returns:
         Decorated function with retry logic.
@@ -181,13 +219,17 @@ def llm_retry(
     if config is None:
         config = RetryConfig()
 
-    def default_on_retry(attempt: int, error: Exception) -> None:
+    def default_on_retry(attempt: int, error: Exception, delay: float) -> None:
+        error_msg = str(error)[:100]
         logger.warning(
-            "LLM call failed (attempt %d/%d): %s. Retrying...",
+            "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs...",
             attempt,
             config.max_retries + 1,
-            str(error)[:100],
+            error_msg,
+            delay,
         )
+        # Also log to verbose output if enabled
+        verbose_log(f"⚠ Retry {attempt}/{config.max_retries + 1}: {error_msg}... waiting {delay:.1f}s")
 
     retry_callback = on_retry or default_on_retry
 
@@ -195,8 +237,10 @@ def llm_retry(
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             last_exception: Exception | None = None
+            _retry_state.reset()
 
             for attempt in range(config.max_retries + 1):
+                _retry_state.record_attempt()
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -206,7 +250,8 @@ def llm_retry(
 
                         if attempt < config.max_retries:
                             delay = config.calculate_delay(attempt)
-                            retry_callback(attempt + 1, e)
+                            _retry_state.record_retry(delay, e)
+                            retry_callback(attempt + 1, e, delay)
                             await asyncio.sleep(delay)
                         else:
                             raise

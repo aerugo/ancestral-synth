@@ -8,6 +8,30 @@ from typing import Callable, Generator
 from rich.console import Console
 
 
+# Global verbose log callback for use by other modules (retry, etc.)
+_verbose_log_callback: Callable[[str], None] | None = None
+
+
+def set_verbose_log_callback(callback: Callable[[str], None] | None) -> None:
+    """Set the global verbose log callback.
+
+    Args:
+        callback: Function to call with verbose log messages, or None to disable.
+    """
+    global _verbose_log_callback
+    _verbose_log_callback = callback
+
+
+def verbose_log(message: str) -> None:
+    """Log a message if verbose mode is enabled.
+
+    Args:
+        message: The message to log.
+    """
+    if _verbose_log_callback is not None:
+        _verbose_log_callback(message)
+
+
 @dataclass
 class TimingResult:
     """Result of a timed operation."""
