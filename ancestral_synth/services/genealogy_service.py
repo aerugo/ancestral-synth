@@ -15,6 +15,7 @@ from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.config import settings
 from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
+from ancestral_synth.utils.timing import VerboseTimer
 from ancestral_synth.domain.enums import (
     EventType,
     NoteCategory,
@@ -52,6 +53,7 @@ class GenealogyService:
         dedup_agent: DedupAgent | None = None,
         validator: Validator | None = None,
         rate_limiter: RateLimiter | None = None,
+        verbose: bool = False,
     ) -> None:
         """Initialize the genealogy service.
 
@@ -62,6 +64,7 @@ class GenealogyService:
             dedup_agent: Agent for deduplication.
             validator: Validator for genealogical plausibility.
             rate_limiter: Rate limiter for LLM API calls.
+            verbose: Enable verbose output with timing information.
         """
         self._db = db
         self._biography_agent = biography_agent or BiographyAgent()
@@ -71,6 +74,12 @@ class GenealogyService:
         self._rate_limiter = rate_limiter or RateLimiter(
             RateLimitConfig(requests_per_minute=settings.llm_requests_per_minute)
         )
+        self._timer = VerboseTimer(enabled=verbose)
+
+    @property
+    def timer(self) -> VerboseTimer:
+        """Get the verbose timer for external access."""
+        return self._timer
 
     async def process_next(self) -> Person | None:
         """Process the next person in the queue.
@@ -116,15 +125,21 @@ class GenealogyService:
 
         # Generate biography (rate limited)
         logger.info(f"Generating biography for seed: {context.given_name} {context.surname}")
+        self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
         await self._rate_limiter.acquire()
-        biography = await self._biography_agent.generate(context)
+        with self._timer.time_operation("Biography generation"):
+            biography = await self._biography_agent.generate(context)
+        self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
         await self._rate_limiter.acquire()
-        extracted = await self._extraction_agent.extract(biography.content)
+        with self._timer.time_operation("Data extraction"):
+            extracted = await self._extraction_agent.extract(biography.content)
+        self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
         # Validate
-        validation = self._validator.validate_extracted_data(extracted)
+        with self._timer.time_operation("Validation", show_start=False):
+            validation = self._validator.validate_extracted_data(extracted)
         if not validation.is_valid:
             logger.warning(f"Validation errors for seed: {validation.errors}")
 
@@ -145,10 +160,15 @@ class GenealogyService:
 
         async with self._db.session() as session:
             person_repo = PersonRepository(session)
-            await person_repo.create(person)
+            with self._timer.time_operation("Save to database", show_start=False):
+                await person_repo.create(person)
 
             # Process references (family members, events, notes)
-            await self._process_references(session, person, extracted)
+            num_refs = len(extracted.parents) + len(extracted.children) + len(extracted.spouses) + len(extracted.siblings)
+            if num_refs > 0:
+                self._timer.log(f"Processing {num_refs} family reference(s)")
+            with self._timer.time_operation("Process references", show_start=False):
+                await self._process_references(session, person, extracted)
 
         logger.info(f"Created seed person: {person.full_name} (ID: {person.id})")
         return person
@@ -179,19 +199,27 @@ class GenealogyService:
 
         # Generate biography (rate limited)
         logger.info(f"Generating biography for: {db_person.given_name} {db_person.surname}")
+        self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
+        if relatives:
+            self._timer.log(f"Context includes {len(relatives)} known relative(s)")
         await self._rate_limiter.acquire()
-        biography = await self._biography_agent.generate(context)
+        with self._timer.time_operation("Biography generation"):
+            biography = await self._biography_agent.generate(context)
+        self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
         await self._rate_limiter.acquire()
-        extracted = await self._extraction_agent.extract_with_hints(
-            biography.content,
-            expected_name=f"{db_person.given_name} {db_person.surname}",
-            expected_birth_year=db_person.birth_date.year if db_person.birth_date else None,
-        )
+        with self._timer.time_operation("Data extraction"):
+            extracted = await self._extraction_agent.extract_with_hints(
+                biography.content,
+                expected_name=f"{db_person.given_name} {db_person.surname}",
+                expected_birth_year=db_person.birth_date.year if db_person.birth_date else None,
+            )
+        self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
         # Validate
-        validation = self._validator.validate_extracted_data(extracted)
+        with self._timer.time_operation("Validation", show_start=False):
+            validation = self._validator.validate_extracted_data(extracted)
         if not validation.is_valid:
             logger.warning(f"Validation errors: {validation.errors}")
         for warning in validation.warnings:
@@ -201,22 +229,27 @@ class GenealogyService:
         async with self._db.session() as session:
             person_repo = PersonRepository(session)
 
-            await person_repo.update(
-                person_id,
-                status=PersonStatus.COMPLETE,
-                given_name=extracted.given_name or db_person.given_name,
-                surname=extracted.surname or db_person.surname,
-                maiden_name=extracted.maiden_name or db_person.maiden_name,
-                gender=extracted.gender,
-                birth_date=extracted.birth_date or db_person.birth_date,
-                birth_place=extracted.birth_place or db_person.birth_place,
-                death_date=extracted.death_date,
-                death_place=extracted.death_place,
-                biography=biography.content,
-            )
+            with self._timer.time_operation("Save to database", show_start=False):
+                await person_repo.update(
+                    person_id,
+                    status=PersonStatus.COMPLETE,
+                    given_name=extracted.given_name or db_person.given_name,
+                    surname=extracted.surname or db_person.surname,
+                    maiden_name=extracted.maiden_name or db_person.maiden_name,
+                    gender=extracted.gender,
+                    birth_date=extracted.birth_date or db_person.birth_date,
+                    birth_place=extracted.birth_place or db_person.birth_place,
+                    death_date=extracted.death_date,
+                    death_place=extracted.death_place,
+                    biography=biography.content,
+                )
 
             # Process references
-            await self._process_references(session, person_repo.to_domain(db_person), extracted)
+            num_refs = len(extracted.parents) + len(extracted.children) + len(extracted.spouses) + len(extracted.siblings)
+            if num_refs > 0:
+                self._timer.log(f"Processing {num_refs} family reference(s)")
+            with self._timer.time_operation("Process references", show_start=False):
+                await self._process_references(session, person_repo.to_domain(db_person), extracted)
 
             # Refresh person
             db_person = await person_repo.get_by_id(person_id)
@@ -395,10 +428,12 @@ class GenealogyService:
             ]
 
             # Check duplicates (rate limited)
+            self._timer.log(f"Checking {len(candidate_summaries)} candidate(s) for duplicate: {reference.name}")
             await self._rate_limiter.acquire()
-            dedup_result = await self._dedup_agent.check_duplicate(
-                new_summary, candidate_summaries
-            )
+            with self._timer.time_operation("Deduplication check"):
+                dedup_result = await self._dedup_agent.check_duplicate(
+                    new_summary, candidate_summaries
+                )
 
             if dedup_result.is_duplicate and dedup_result.matched_person_id:
                 logger.info(

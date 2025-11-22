@@ -12,6 +12,10 @@ from ancestral_synth.utils.retry import (
     llm_retry,
     retry_with_backoff,
 )
+from ancestral_synth.utils.timing import (
+    TimingResult,
+    VerboseTimer,
+)
 
 __all__ = [
     "RateLimitConfig",
@@ -22,4 +26,6 @@ __all__ = [
     "is_retryable_error",
     "llm_retry",
     "retry_with_backoff",
+    "TimingResult",
+    "VerboseTimer",
 ]

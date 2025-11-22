@@ -47,32 +47,61 @@ def generate(
         "-d",
         help="Path to database file",
     ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output with timing"),
 ) -> None:
     """Generate new persons in the genealogical dataset."""
+    import time
+
     configure_logging(verbose)
 
     async def _generate() -> None:
+        total_start = time.perf_counter()
+
         async with Database(db_path) as db:
-            service = GenealogyService(db)
+            service = GenealogyService(db, verbose=verbose)
+
+            if verbose:
+                console.print()
+                console.print(f"[bold]Configuration:[/bold]")
+                console.print(f"  LLM: {settings.llm_provider}:{settings.llm_model}")
+                console.print(f"  Biography words: ~{settings.biography_word_count}")
+                console.print(f"  Rate limit: {settings.llm_requests_per_minute} req/min")
+                console.print()
 
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 console=console,
+                disable=verbose,  # Disable spinner in verbose mode for cleaner output
             ) as progress:
                 task = progress.add_task(f"Generating {count} person(s)...", total=count)
 
                 for i in range(count):
+                    person_start = time.perf_counter()
                     progress.update(task, description=f"Processing person {i + 1}/{count}...")
+
+                    if verbose:
+                        console.print(f"[bold cyan]Person {i + 1}/{count}[/bold cyan]")
+
+                    # Clear timer for this person
+                    service.timer.clear()
 
                     try:
                         person = await service.process_next()
+                        person_duration = time.perf_counter() - person_start
+
                         if person:
-                            console.print(
-                                f"  [green]✓[/green] Created: {person.full_name} "
-                                f"(gen {person.generation})"
-                            )
+                            if verbose:
+                                console.print(
+                                    f"  [green]✓[/green] Created: [bold]{person.full_name}[/bold] "
+                                    f"(gen {person.generation}) in [cyan]{person_duration:.1f}s[/cyan]"
+                                )
+                                console.print()
+                            else:
+                                console.print(
+                                    f"  [green]✓[/green] Created: {person.full_name} "
+                                    f"(gen {person.generation})"
+                                )
                         else:
                             console.print("  [yellow]![/yellow] No person to process")
                     except Exception as e:
@@ -82,6 +111,8 @@ def generate(
 
                     progress.advance(task)
 
+            total_duration = time.perf_counter() - total_start
+
             # Show stats
             stats = await service.get_statistics()
             console.print()
@@ -90,6 +121,13 @@ def generate(
             console.print(f"  Complete: {stats['complete']}")
             console.print(f"  Pending: {stats['pending']}")
             console.print(f"  Queue size: {stats['queue_size']}")
+
+            if verbose:
+                console.print()
+                console.print("[bold]Timing Summary:[/bold]")
+                console.print(f"  Total time: [cyan]{total_duration:.1f}s[/cyan]")
+                if count > 0:
+                    console.print(f"  Average per person: [cyan]{total_duration / count:.1f}s[/cyan]")
 
     asyncio.run(_generate())
 
