@@ -563,6 +563,71 @@ def export_gedcom(
     asyncio.run(_export())
 
 
+@export_app.command("f8vision")
+def export_f8vision(
+    db_path: Path = typer.Option(
+        settings.database_path,
+        "--db",
+        "-d",
+        help="Path to database file",
+    ),
+    output: Path = typer.Option(
+        Path("genealogy.yaml"),
+        "--output",
+        "-o",
+        help="Output file path",
+    ),
+    title: str = typer.Option(
+        None,
+        "--title",
+        "-t",
+        help="Title for the family tree",
+    ),
+    center: str = typer.Option(
+        None,
+        "--center",
+        "-c",
+        help="UUID of person to center the visualization on",
+    ),
+    description: str = typer.Option(
+        None,
+        "--description",
+        help="Description of the family tree",
+    ),
+) -> None:
+    """Export data to f8vision-web YAML format.
+
+    The f8vision-web format is a YAML file that can be imported into
+    f8vision-web for interactive 3D visualization of the family tree.
+    """
+    from uuid import UUID
+
+    from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+    async def _export() -> None:
+        # Parse center UUID if provided
+        centered_person_id = None
+        if center:
+            try:
+                centered_person_id = UUID(center)
+            except ValueError:
+                console.print(f"[red]Invalid UUID: {center}[/red]")
+                raise typer.Exit(1)
+
+        async with Database(db_path) as db:
+            exporter = F8VisionExporter(db)
+            with open(output, "w") as f:
+                await exporter.export(
+                    f,
+                    title=title,
+                    centered_person_id=centered_person_id,
+                    description=description,
+                )
+            console.print(f"[green]✓[/green] Exported to: {output}")
+
+    asyncio.run(_export())
+
+
 # Query commands
 @app.command()
 def ancestors(

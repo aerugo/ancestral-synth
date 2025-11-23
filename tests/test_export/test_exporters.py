@@ -362,3 +362,224 @@ class TestGEDCOMExporter:
         content = output.read()
 
         assert content.strip().endswith("0 TRLR")
+
+
+class TestF8VisionExporter:
+    """Tests for F8Vision-web YAML export functionality."""
+
+    @pytest.fixture
+    async def populated_db(self, test_db: Database):
+        """Create a database with test data including spouse relationships."""
+        from ancestral_synth.domain.models import SpouseLink
+        from ancestral_synth.persistence.repositories import SpouseLinkRepository
+
+        async with test_db.session() as session:
+            person_repo = PersonRepository(session)
+            child_link_repo = ChildLinkRepository(session)
+            spouse_link_repo = SpouseLinkRepository(session)
+
+            father = Person(
+                id=uuid4(),
+                given_name="John",
+                surname="Smith",
+                gender=Gender.MALE,
+                birth_date=date(1920, 5, 15),
+                death_date=date(1990, 3, 20),
+                birth_place="Boston, MA",
+                status=PersonStatus.COMPLETE,
+                biography="John Smith was a carpenter who built homes for over 40 years.",
+                generation=-1,
+            )
+            mother = Person(
+                id=uuid4(),
+                given_name="Mary",
+                surname="Smith",
+                maiden_name="Johnson",
+                gender=Gender.FEMALE,
+                birth_date=date(1925, 9, 20),
+                status=PersonStatus.COMPLETE,
+                biography="Mary was a teacher who loved gardening.",
+                generation=-1,
+            )
+            child = Person(
+                id=uuid4(),
+                given_name="James",
+                surname="Smith",
+                gender=Gender.MALE,
+                birth_date=date(1950, 8, 10),
+                status=PersonStatus.COMPLETE,
+                generation=0,
+            )
+
+            await person_repo.create(father)
+            await person_repo.create(mother)
+            await person_repo.create(child)
+            await child_link_repo.create(ChildLink(parent_id=father.id, child_id=child.id))
+            await child_link_repo.create(ChildLink(parent_id=mother.id, child_id=child.id))
+            await spouse_link_repo.create(SpouseLink(person1_id=father.id, person2_id=mother.id))
+
+        return test_db, father, mother, child
+
+    @pytest.mark.asyncio
+    async def test_export_to_yaml(self, populated_db) -> None:
+        """Should export entire dataset to YAML."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, _, _, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        assert "people" in data
+        assert len(data["people"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_yaml_includes_meta(self, populated_db) -> None:
+        """Should include meta section when provided."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, _, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(
+            output,
+            title="Smith Family",
+            centered_person_id=father.id,
+            description="Three generations of Smiths",
+        )
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        assert "meta" in data
+        assert data["meta"]["title"] == "Smith Family"
+        assert data["meta"]["centeredPersonId"] == str(father.id)
+        assert data["meta"]["description"] == "Three generations of Smiths"
+
+    @pytest.mark.asyncio
+    async def test_yaml_person_format(self, populated_db) -> None:
+        """Should format persons according to f8vision-web spec."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, _, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # Find John by name
+        john = next(p for p in data["people"] if "John" in p["name"])
+
+        assert john["id"] == str(father.id)
+        assert john["name"] == "John Smith"
+        assert john["birthDate"] == "1920-05-15"
+        assert john["deathDate"] == "1990-03-20"
+        assert "biography" in john
+
+    @pytest.mark.asyncio
+    async def test_yaml_includes_parent_ids(self, populated_db) -> None:
+        """Should include parentIds for children."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, mother, child = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # Find James (the child)
+        james = next(p for p in data["people"] if "James" in p["name"])
+
+        assert "parentIds" in james
+        assert str(father.id) in james["parentIds"]
+        assert str(mother.id) in james["parentIds"]
+
+    @pytest.mark.asyncio
+    async def test_yaml_includes_child_ids(self, populated_db) -> None:
+        """Should include childIds for parents."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, _, child = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # Find John (the father)
+        john = next(p for p in data["people"] if "John" in p["name"])
+
+        assert "childIds" in john
+        assert str(child.id) in john["childIds"]
+
+    @pytest.mark.asyncio
+    async def test_yaml_includes_spouse_ids(self, populated_db) -> None:
+        """Should include spouseIds for married persons."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, mother, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # Find John and Mary
+        john = next(p for p in data["people"] if "John" in p["name"])
+        mary = next(p for p in data["people"] if "Mary" in p["name"])
+
+        assert "spouseIds" in john
+        assert str(mother.id) in john["spouseIds"]
+        assert "spouseIds" in mary
+        assert str(father.id) in mary["spouseIds"]
+
+    @pytest.mark.asyncio
+    async def test_yaml_omits_empty_relationship_arrays(self, test_db: Database) -> None:
+        """Should not include empty relationship arrays."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        # Create a lone person with no relationships
+        async with test_db.session() as session:
+            person_repo = PersonRepository(session)
+            lone_person = Person(
+                id=uuid4(),
+                given_name="Lone",
+                surname="Person",
+                gender=Gender.MALE,
+                status=PersonStatus.COMPLETE,
+            )
+            await person_repo.create(lone_person)
+
+        exporter = F8VisionExporter(test_db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        lone = data["people"][0]
+        assert "parentIds" not in lone
+        assert "childIds" not in lone
+        assert "spouseIds" not in lone
