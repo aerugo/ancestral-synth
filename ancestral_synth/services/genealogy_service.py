@@ -19,6 +19,7 @@ from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
 from ancestral_synth.utils.timing import VerboseTimer, set_verbose_log_callback
 from ancestral_synth.domain.enums import (
     EventType,
+    Gender,
     NoteCategory,
     PersonStatus,
     RelationshipType,
@@ -31,6 +32,7 @@ from ancestral_synth.domain.models import (
     Person,
     PersonReference,
     PersonSummary,
+    SpouseLink,
 )
 from ancestral_synth.persistence.database import Database
 from ancestral_synth.persistence.repositories import (
@@ -39,6 +41,7 @@ from ancestral_synth.persistence.repositories import (
     NoteRepository,
     PersonRepository,
     QueueRepository,
+    SpouseLinkRepository,
 )
 from ancestral_synth.services.validation import ValidationResult, Validator
 
@@ -328,31 +331,111 @@ class GenealogyService:
         session,  # noqa: ANN001
         person_id: UUID,
     ) -> list[PersonSummary]:
-        """Gather context about known relatives."""
+        """Gather context about known relatives.
+
+        Includes: parents, children, spouses, siblings, grandparents,
+        grandchildren, uncles/aunts, cousins, nieces/nephews.
+        """
         person_repo = PersonRepository(session)
         child_link_repo = ChildLinkRepository(session)
+        spouse_link_repo = SpouseLinkRepository(session)
 
         relatives: list[PersonSummary] = []
+        seen_ids: set[UUID] = {person_id}  # Track seen IDs to avoid duplicates
+
+        async def add_relative(
+            rel_id: UUID, relationship: RelationshipType
+        ) -> None:
+            """Add a relative to the list if not already seen."""
+            if rel_id in seen_ids:
+                return
+            seen_ids.add(rel_id)
+            person = await person_repo.get_by_id(rel_id)
+            if person:
+                summary = person_repo.to_summary(person, relationship)
+                if person.biography:
+                    summary.key_facts = self._extract_key_facts(person.biography)
+                relatives.append(summary)
 
         # Get parents
         parent_ids = await child_link_repo.get_parents(person_id)
         for parent_id in parent_ids:
-            parent = await person_repo.get_by_id(parent_id)
-            if parent:
-                summary = person_repo.to_summary(parent, RelationshipType.PARENT)
-                if parent.biography:
-                    summary.key_facts = self._extract_key_facts(parent.biography)
-                relatives.append(summary)
+            await add_relative(parent_id, RelationshipType.PARENT)
 
         # Get children
         child_ids = await child_link_repo.get_children(person_id)
         for child_id in child_ids:
-            child = await person_repo.get_by_id(child_id)
-            if child:
-                summary = person_repo.to_summary(child, RelationshipType.CHILD)
-                if child.biography:
-                    summary.key_facts = self._extract_key_facts(child.biography)
-                relatives.append(summary)
+            await add_relative(child_id, RelationshipType.CHILD)
+
+        # Get spouses
+        spouse_ids = await spouse_link_repo.get_spouses(person_id)
+        for spouse_id in spouse_ids:
+            await add_relative(spouse_id, RelationshipType.SPOUSE)
+
+        # Get siblings (other children of the same parents)
+        for parent_id in parent_ids:
+            sibling_ids = await child_link_repo.get_children(parent_id)
+            for sibling_id in sibling_ids:
+                if sibling_id != person_id:
+                    await add_relative(sibling_id, RelationshipType.SIBLING)
+
+        # Get grandparents (parents of parents)
+        for parent_id in parent_ids:
+            grandparent_ids = await child_link_repo.get_parents(parent_id)
+            for grandparent_id in grandparent_ids:
+                await add_relative(grandparent_id, RelationshipType.GRANDPARENT)
+
+        # Get grandchildren (children of children)
+        for child_id in child_ids:
+            grandchild_ids = await child_link_repo.get_children(child_id)
+            for grandchild_id in grandchild_ids:
+                await add_relative(grandchild_id, RelationshipType.GRANDCHILD)
+
+        # Get uncles/aunts (siblings of parents)
+        for parent_id in parent_ids:
+            # Get grandparents to find parent's siblings
+            grandparent_ids = await child_link_repo.get_parents(parent_id)
+            for grandparent_id in grandparent_ids:
+                parent_sibling_ids = await child_link_repo.get_children(grandparent_id)
+                for parent_sibling_id in parent_sibling_ids:
+                    if parent_sibling_id != parent_id:
+                        # Determine if uncle or aunt based on gender
+                        uncle_aunt = await person_repo.get_by_id(parent_sibling_id)
+                        if uncle_aunt:
+                            if uncle_aunt.gender == Gender.MALE:
+                                await add_relative(parent_sibling_id, RelationshipType.UNCLE)
+                            elif uncle_aunt.gender == Gender.FEMALE:
+                                await add_relative(parent_sibling_id, RelationshipType.AUNT)
+                            else:
+                                await add_relative(parent_sibling_id, RelationshipType.UNCLE)
+
+        # Get cousins (children of uncles/aunts)
+        for parent_id in parent_ids:
+            grandparent_ids = await child_link_repo.get_parents(parent_id)
+            for grandparent_id in grandparent_ids:
+                parent_sibling_ids = await child_link_repo.get_children(grandparent_id)
+                for parent_sibling_id in parent_sibling_ids:
+                    if parent_sibling_id != parent_id:
+                        cousin_ids = await child_link_repo.get_children(parent_sibling_id)
+                        for cousin_id in cousin_ids:
+                            await add_relative(cousin_id, RelationshipType.COUSIN)
+
+        # Get nieces/nephews (children of siblings)
+        for parent_id in parent_ids:
+            sibling_ids = await child_link_repo.get_children(parent_id)
+            for sibling_id in sibling_ids:
+                if sibling_id != person_id:
+                    niece_nephew_ids = await child_link_repo.get_children(sibling_id)
+                    for niece_nephew_id in niece_nephew_ids:
+                        # Determine if niece or nephew based on gender
+                        niece_nephew = await person_repo.get_by_id(niece_nephew_id)
+                        if niece_nephew:
+                            if niece_nephew.gender == Gender.MALE:
+                                await add_relative(niece_nephew_id, RelationshipType.NEPHEW)
+                            elif niece_nephew.gender == Gender.FEMALE:
+                                await add_relative(niece_nephew_id, RelationshipType.NIECE)
+                            else:
+                                await add_relative(niece_nephew_id, RelationshipType.NEPHEW)
 
         return relatives
 
@@ -380,6 +463,7 @@ class GenealogyService:
         event_repo = EventRepository(session)
         note_repo = NoteRepository(session)
         child_link_repo = ChildLinkRepository(session)
+        spouse_link_repo = SpouseLinkRepository(session)
         queue_repo = QueueRepository(session)
 
         # Process parents - these get queued
@@ -408,9 +492,15 @@ class GenealogyService:
                     await queue_repo.enqueue(child_id, priority=1)
                     await person_repo.update(child_id, status=PersonStatus.QUEUED)
 
-        # Process spouses - these stay pending (not queued) unless they become parents
+        # Process spouses - create spouse links
         for spouse_ref in extracted.spouses:
-            await self._resolve_person_reference(session, spouse_ref, person.generation)
+            spouse_id = await self._resolve_person_reference(
+                session, spouse_ref, person.generation
+            )
+            if spouse_id and not await spouse_link_repo.exists(person.id, spouse_id):
+                await spouse_link_repo.create(
+                    SpouseLink(person1_id=person.id, person2_id=spouse_id)
+                )
 
         # Process siblings - stay pending
         for sibling_ref in extracted.siblings:

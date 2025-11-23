@@ -7,7 +7,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from ancestral_synth.domain.enums import PersonStatus
-from ancestral_synth.domain.models import ChildLink, Event, Note, Person, PersonSummary
+from ancestral_synth.domain.models import ChildLink, Event, Note, Person, PersonSummary, SpouseLink
 from ancestral_synth.persistence.tables import (
     ChildLinkTable,
     EventParticipantTable,
@@ -16,6 +16,7 @@ from ancestral_synth.persistence.tables import (
     NoteTable,
     PersonTable,
     QueueEntryTable,
+    SpouseLinkTable,
 )
 
 
@@ -269,6 +270,60 @@ class ChildLinkRepository:
         stmt = select(ChildLinkTable.parent_id).where(ChildLinkTable.child_id == child_id)
         result = await self._session.exec(stmt)
         return list(result.all())
+
+
+class SpouseLinkRepository:
+    """Repository for SpouseLink operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, link: SpouseLink) -> SpouseLinkTable:
+        """Create a new spouse link.
+
+        Links are stored with the smaller UUID as person1_id for consistency.
+        """
+        # Normalize the order to avoid duplicate entries (A-B vs B-A)
+        if str(link.person1_id) < str(link.person2_id):
+            p1, p2 = link.person1_id, link.person2_id
+        else:
+            p1, p2 = link.person2_id, link.person1_id
+
+        db_link = SpouseLinkTable(person1_id=p1, person2_id=p2)
+        self._session.add(db_link)
+        await self._session.flush()
+        return db_link
+
+    async def exists(self, person1_id: UUID, person2_id: UUID) -> bool:
+        """Check if a spouse link already exists (in either direction)."""
+        # Normalize the order
+        if str(person1_id) < str(person2_id):
+            p1, p2 = person1_id, person2_id
+        else:
+            p1, p2 = person2_id, person1_id
+
+        stmt = select(SpouseLinkTable).where(
+            SpouseLinkTable.person1_id == p1,
+            SpouseLinkTable.person2_id == p2,
+        )
+        result = await self._session.exec(stmt)
+        return result.first() is not None
+
+    async def get_spouses(self, person_id: UUID) -> list[UUID]:
+        """Get all spouses of a person."""
+        # Check both directions since person could be person1 or person2
+        stmt1 = select(SpouseLinkTable.person2_id).where(
+            SpouseLinkTable.person1_id == person_id
+        )
+        stmt2 = select(SpouseLinkTable.person1_id).where(
+            SpouseLinkTable.person2_id == person_id
+        )
+
+        result1 = await self._session.exec(stmt1)
+        result2 = await self._session.exec(stmt2)
+
+        spouses = list(result1.all()) + list(result2.all())
+        return spouses
 
 
 class QueueRepository:

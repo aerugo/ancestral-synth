@@ -27,6 +27,13 @@ class RelationshipType(StrEnum):
     CHILD = "child"
     SPOUSE = "spouse"
     SIBLING = "sibling"
+    GRANDPARENT = "grandparent"
+    GRANDCHILD = "grandchild"
+    UNCLE = "uncle"
+    AUNT = "aunt"
+    COUSIN = "cousin"
+    NIECE = "niece"
+    NEPHEW = "nephew"
     OTHER = "other"
 
 
