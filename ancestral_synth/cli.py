@@ -611,6 +611,11 @@ def export_f8vision(
         "--description",
         help="Description of the family tree",
     ),
+    truncate: int = typer.Option(
+        None,
+        "--truncate",
+        help="Truncate description fields (biography) to this many characters",
+    ),
 ) -> None:
     """Export data to f8vision-web YAML format.
 
@@ -639,6 +644,7 @@ def export_f8vision(
                     title=title,
                     centered_person_id=centered_person_id,
                     description=description,
+                    truncate_descriptions=truncate,
                 )
             console.print(f"[green]✓[/green] Exported to: {output}")
 
