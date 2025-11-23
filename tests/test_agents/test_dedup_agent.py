@@ -306,3 +306,166 @@ class TestDedupAgentPromptBuilding:
         prompt = agent._build_prompt(new_person, candidates)
 
         assert "parent" in prompt.lower()
+
+    def test_build_prompt_includes_mentioned_by(self) -> None:
+        """Should include who mentioned this person when available."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            mentioned_by="Mary Smith",
+        )
+
+        candidates = []
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "Mary Smith" in prompt
+        assert "mentioned" in prompt.lower()
+
+    def test_build_prompt_includes_generation(self) -> None:
+        """Should include generation info when available."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            generation=3,
+        )
+
+        candidates = []
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "generation" in prompt.lower()
+        assert "3" in prompt
+
+    def test_build_prompt_includes_first_degree_relations_new_person(self) -> None:
+        """Should include first degree relations for new person."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            parents=["George Smith", "Martha Smith"],
+            children=["James Smith"],
+            spouses=["Mary Jones"],
+            siblings=["Bob Smith"],
+        )
+
+        candidates = []
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "George Smith" in prompt
+        assert "Martha Smith" in prompt
+        assert "James Smith" in prompt
+        assert "Mary Jones" in prompt
+        assert "Bob Smith" in prompt
+
+    def test_build_prompt_includes_second_degree_relations_new_person(self) -> None:
+        """Should include second degree relations for new person."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            grandparents=["Old George Smith"],
+            grandchildren=["Baby Smith"],
+        )
+
+        candidates = []
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "Old George Smith" in prompt
+        assert "Baby Smith" in prompt
+
+    def test_build_prompt_includes_candidate_relations(self) -> None:
+        """Should include relations for candidates."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        candidates = [
+            PersonSummary(
+                id=uuid4(),
+                full_name="John A. Smith",
+                gender=Gender.MALE,
+                parents=["George Smith"],
+                spouses=["Mary Jones"],
+            ),
+        ]
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        # Candidate's relations should be in prompt
+        assert "George Smith" in prompt
+        assert "Mary Jones" in prompt
+
+    def test_build_prompt_includes_more_key_facts(self) -> None:
+        """Should include more than 3 key facts for candidates."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        candidates = [
+            PersonSummary(
+                id=uuid4(),
+                full_name="John A. Smith",
+                gender=Gender.MALE,
+                key_facts=[
+                    "Fact 1",
+                    "Fact 2",
+                    "Fact 3",
+                    "Fact 4",
+                    "Fact 5",
+                ],
+            ),
+        ]
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        # Should include all 5 facts (not just 3)
+        assert "Fact 1" in prompt
+        assert "Fact 2" in prompt
+        assert "Fact 3" in prompt
+        assert "Fact 4" in prompt
+        assert "Fact 5" in prompt
+
+    def test_build_prompt_includes_candidate_generation(self) -> None:
+        """Should include generation info for candidates."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        candidates = [
+            PersonSummary(
+                id=uuid4(),
+                full_name="John A. Smith",
+                gender=Gender.MALE,
+                generation=4,
+            ),
+        ]
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "generation" in prompt.lower()
+        assert "4" in prompt

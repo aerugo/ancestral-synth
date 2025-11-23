@@ -99,6 +99,22 @@ class PersonSummary(BaseModel):
     relationship_to_subject: RelationshipType | None = None
     key_facts: list[str] = Field(default_factory=list)
 
+    # Context about who mentioned this person
+    mentioned_by: str | None = None
+
+    # Generation info
+    generation: int | None = None
+
+    # First degree relations
+    parents: list[str] = Field(default_factory=list)
+    children: list[str] = Field(default_factory=list)
+    spouses: list[str] = Field(default_factory=list)
+    siblings: list[str] = Field(default_factory=list)
+
+    # Second degree relations
+    grandparents: list[str] = Field(default_factory=list)
+    grandchildren: list[str] = Field(default_factory=list)
+
 
 class Event(BaseModel):
     """A life event associated with one or more people."""
