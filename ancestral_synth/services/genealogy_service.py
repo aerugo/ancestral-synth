@@ -771,6 +771,31 @@ class GenealogyService:
         }
         return inverse_map.get(relationship, RelationshipType.OTHER)
 
+    def _get_relationship_description(self, relationship: RelationshipType) -> str:
+        """Convert a relationship type to a human-readable description.
+
+        Args:
+            relationship: The relationship type to describe.
+
+        Returns:
+            A human-readable description of the relationship.
+        """
+        descriptions = {
+            RelationshipType.PARENT: "parent",
+            RelationshipType.CHILD: "child",
+            RelationshipType.SPOUSE: "spouse",
+            RelationshipType.SIBLING: "sibling",
+            RelationshipType.GRANDPARENT: "grandparent",
+            RelationshipType.GRANDCHILD: "grandchild",
+            RelationshipType.UNCLE: "uncle",
+            RelationshipType.AUNT: "aunt",
+            RelationshipType.COUSIN: "cousin",
+            RelationshipType.NIECE: "niece",
+            RelationshipType.NEPHEW: "nephew",
+            RelationshipType.OTHER: "relative",
+        }
+        return descriptions.get(relationship, "relative")
+
     async def _evaluate_shared_events(
         self,
         session,  # noqa: ANN001
@@ -810,7 +835,12 @@ class GenealogyService:
         existing_name = f"{existing_db_person.given_name} {existing_db_person.surname}"
         new_name = new_person.full_name
 
-        self._timer.log(f"Evaluating shared events between {new_name} and {existing_name}")
+        # Get relationship description for logging
+        relationship_desc = self._get_relationship_description(relationship)
+        self._timer.log(
+            f"Evaluating shared events between {new_name} and {existing_name} "
+            f"({new_name} is {existing_name}'s {relationship_desc})"
+        )
 
         # Call the shared event agent (rate limited)
         await self._acquire_rate_limit("shared event analysis")
@@ -833,6 +863,17 @@ class GenealogyService:
 
         analysis = analysis_result.analysis
 
+        # Log analysis results in verbose mode
+        if self._verbose:
+            num_events = len(analysis.shared_events)
+            num_context = len(analysis.discovered_context)
+            self._timer.log(
+                f"Analysis complete: found {num_events} shared event(s) "
+                f"and {num_context} discovered context item(s)"
+            )
+            if analysis.reasoning:
+                self._timer.log(f"Reasoning: {analysis.reasoning}")
+
         if not analysis.should_update:
             self._timer.log(f"No updates needed for {existing_name}")
             return
@@ -851,6 +892,15 @@ class GenealogyService:
             await event_repo.create(event)
             events_added += 1
 
+            # Log each event in verbose mode
+            if self._verbose:
+                year_str = f" ({shared_event.event_year})" if shared_event.event_year else ""
+                location_str = f" at {shared_event.location}" if shared_event.location else ""
+                self._timer.log(
+                    f"  + Event: {shared_event.event_type.value}{year_str}{location_str}"
+                )
+                self._timer.log(f"    {shared_event.description}")
+
         # Process discovered context as notes
         notes_added = 0
         for context in analysis.discovered_context:
@@ -863,6 +913,11 @@ class GenealogyService:
             )
             await note_repo.create(note)
             notes_added += 1
+
+            # Log each note in verbose mode
+            if self._verbose:
+                self._timer.log(f"  + Note: {context.content}")
+                self._timer.log(f"    Significance: {context.significance}")
 
         if events_added > 0 or notes_added > 0:
             logger.info(
