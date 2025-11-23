@@ -38,12 +38,45 @@ def configure_logging(verbose: bool = False) -> None:
     )
 
 
-KNOWN_OPENAI_MODELS = {
-    "gpt-4o", "gpt-4o-mini", "gpt-4o-2024-08-06", "gpt-4o-2024-05-13",
-    "gpt-4-turbo", "gpt-4-turbo-preview", "gpt-4", "gpt-4-32k",
-    "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
-    "o1", "o1-mini", "o1-preview",
-}
+# Cache for OpenAI models (fetched once per session)
+_openai_models_cache: set[str] | None = None
+
+
+def _fetch_openai_models() -> set[str] | None:
+    """Fetch available models from OpenAI API.
+
+    Returns:
+        Set of model IDs, or None if fetching failed.
+    """
+    global _openai_models_cache
+
+    if _openai_models_cache is not None:
+        return _openai_models_cache
+
+    try:
+        import os
+
+        from openai import OpenAI
+
+        # Check if API key is available
+        if not os.environ.get("OPENAI_API_KEY"):
+            return None
+
+        client = OpenAI()
+        models = client.models.list()
+
+        # Filter to chat/completion models (gpt-*, o1-*, etc.)
+        chat_models = {
+            m.id for m in models.data
+            if m.id.startswith(("gpt-", "o1", "o3", "o4"))
+        }
+
+        _openai_models_cache = chat_models
+        return chat_models
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch OpenAI models: {e}")
+        return None
 
 
 def _validate_model_name() -> None:
@@ -52,10 +85,26 @@ def _validate_model_name() -> None:
     provider = settings.llm_provider
 
     if provider == "openai":
-        if model not in KNOWN_OPENAI_MODELS:
-            console.print(f"[bold yellow]⚠ Warning:[/bold yellow] Model '{model}' is not a known OpenAI model.")
-            console.print(f"  Known models: {', '.join(sorted(KNOWN_OPENAI_MODELS))}")
-            console.print(f"  This may cause API errors and slow retries.")
+        known_models = _fetch_openai_models()
+
+        if known_models is None:
+            # Could not fetch models, skip validation
+            return
+
+        if model not in known_models:
+            console.print(
+                f"[bold yellow]⚠ Warning:[/bold yellow] "
+                f"Model '{model}' is not a known OpenAI model."
+            )
+            # Show a subset of relevant models for readability
+            relevant_models = sorted(
+                m for m in known_models
+                if m.startswith(("gpt-4o", "gpt-4-", "gpt-3.5", "o1", "o3", "o4"))
+                and not m.startswith(("gpt-4o-realtime", "gpt-4o-audio", "gpt-4o-mini-realtime"))
+            )
+            if relevant_models:
+                console.print(f"  Some available models: {', '.join(relevant_models[:15])}")
+            console.print("  This may cause API errors and slow retries.")
             console.print()
 
 
