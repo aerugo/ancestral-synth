@@ -152,6 +152,15 @@ class ChildLink(BaseModel):
     child_id: UUID = Field(description="ID of the child")
 
 
+class SpouseLink(BaseModel):
+    """A spouse relationship link."""
+
+    model_config = {"frozen": True}
+
+    person1_id: UUID = Field(description="ID of the first spouse")
+    person2_id: UUID = Field(description="ID of the second spouse")
+
+
 class Biography(BaseModel):
     """A generated biography for a person."""
 

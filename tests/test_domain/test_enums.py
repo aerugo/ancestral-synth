@@ -73,8 +73,18 @@ class TestRelationshipType:
         assert RelationshipType.OTHER == "other"
 
     def test_relationship_count(self) -> None:
-        """Should have exactly 5 relationship types."""
-        assert len(RelationshipType) == 5
+        """Should have exactly 12 relationship types."""
+        assert len(RelationshipType) == 12
+
+    def test_extended_relationship_types_exist(self) -> None:
+        """Extended relationship types should exist."""
+        assert RelationshipType.GRANDPARENT == "grandparent"
+        assert RelationshipType.GRANDCHILD == "grandchild"
+        assert RelationshipType.UNCLE == "uncle"
+        assert RelationshipType.AUNT == "aunt"
+        assert RelationshipType.COUSIN == "cousin"
+        assert RelationshipType.NIECE == "niece"
+        assert RelationshipType.NEPHEW == "nephew"
 
 
 class TestEventType:

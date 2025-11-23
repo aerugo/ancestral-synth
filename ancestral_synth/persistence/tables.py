@@ -127,6 +127,16 @@ class ChildLinkTable(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class SpouseLinkTable(SQLModel, table=True):
+    """Database table for spouse relationships."""
+
+    __tablename__ = "spouse_links"  # type: ignore[assignment]
+
+    person1_id: UUID = Field(foreign_key="persons.id", primary_key=True, index=True)
+    person2_id: UUID = Field(foreign_key="persons.id", primary_key=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class QueueEntryTable(SQLModel, table=True):
     """Database table for the creation queue."""
 
