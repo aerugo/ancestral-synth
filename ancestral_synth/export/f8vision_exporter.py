@@ -1,6 +1,7 @@
 """F8Vision-web YAML exporter for genealogical data."""
 
 import random
+from dataclasses import dataclass
 from typing import IO, Any
 from uuid import UUID
 
@@ -13,6 +14,24 @@ from ancestral_synth.persistence.tables import (
     PersonTable,
     SpouseLinkTable,
 )
+
+
+@dataclass
+class SiblingGroupExport:
+    """A group of siblings sharing the same parent(s) for export."""
+
+    parent_names: tuple[str, ...]  # Names of shared parents (sorted alphabetically)
+    sibling_ids: list[UUID]  # IDs of siblings in this group
+
+    @property
+    def label(self) -> str:
+        """Generate a label like 'Siblings through Adam and Eve'."""
+        if len(self.parent_names) == 0:
+            return "Siblings"
+        elif len(self.parent_names) == 1:
+            return f"Siblings through {self.parent_names[0]}"
+        else:
+            return f"Siblings through {self.parent_names[0]} and {self.parent_names[1]}"
 
 
 class F8VisionExporter:
@@ -85,6 +104,14 @@ class F8VisionExporter:
         child_to_parents = self._build_child_to_parents_map(child_links)
         person_to_spouses = self._build_spouse_map(spouse_links)
 
+        # Build person ID to name map
+        person_id_to_name = {p.id: f"{p.given_name} {p.surname}".strip() for p in persons}
+
+        # Build sibling groups for each person
+        person_to_sibling_groups = self._build_sibling_groups(
+            persons, parent_to_children, child_to_parents, person_id_to_name
+        )
+
         # Convert persons to f8vision format
         people = [
             self._person_to_f8vision(
@@ -92,6 +119,7 @@ class F8VisionExporter:
                 parent_to_children.get(person.id, []),
                 child_to_parents.get(person.id, []),
                 person_to_spouses.get(person.id, []),
+                person_to_sibling_groups.get(person.id, []),
             )
             for person in persons
         ]
@@ -127,6 +155,7 @@ class F8VisionExporter:
         child_ids: list[UUID],
         parent_ids: list[UUID],
         spouse_ids: list[UUID],
+        sibling_groups: list[SiblingGroupExport],
     ) -> dict[str, Any]:
         """Convert a person to f8vision-web format.
 
@@ -135,6 +164,7 @@ class F8VisionExporter:
             child_ids: List of this person's children's IDs.
             parent_ids: List of this person's parents' IDs.
             spouse_ids: List of this person's spouses' IDs.
+            sibling_groups: List of sibling groups (grouped by shared parents).
 
         Returns:
             Dictionary in f8vision-web person format.
@@ -164,6 +194,16 @@ class F8VisionExporter:
 
         if child_ids:
             result["childIds"] = [self._format_id(cid) for cid in child_ids]
+
+        # Add sibling groups (grouped by shared parents)
+        if sibling_groups:
+            result["siblings"] = [
+                {
+                    "label": group.label,
+                    "siblingIds": [self._format_id(sid) for sid in group.sibling_ids],
+                }
+                for group in sibling_groups
+            ]
 
         return result
 
@@ -238,6 +278,74 @@ class F8VisionExporter:
 
             result[link.person1_id].append(link.person2_id)
             result[link.person2_id].append(link.person1_id)
+
+        return result
+
+    def _build_sibling_groups(
+        self,
+        persons: list[PersonTable],
+        parent_to_children: dict[UUID, list[UUID]],
+        child_to_parents: dict[UUID, list[UUID]],
+        person_id_to_name: dict[UUID, str],
+    ) -> dict[UUID, list[SiblingGroupExport]]:
+        """Build sibling groups for each person, grouped by shared parents.
+
+        Siblings are grouped by which parents they share:
+        - Full siblings share both parents
+        - Half-siblings share only one parent
+
+        Args:
+            persons: List of all persons.
+            parent_to_children: Map of parent IDs to child IDs.
+            child_to_parents: Map of child IDs to parent IDs.
+            person_id_to_name: Map of person IDs to full names.
+
+        Returns:
+            Dictionary mapping person UUIDs to lists of SiblingGroupExport.
+        """
+        result: dict[UUID, list[SiblingGroupExport]] = {}
+
+        for person in persons:
+            parent_ids = child_to_parents.get(person.id, [])
+            if not parent_ids:
+                # No parents means no siblings through parents
+                continue
+
+            # Find all siblings and track which parents they share
+            sibling_to_shared_parents: dict[UUID, set[UUID]] = {}
+
+            for parent_id in parent_ids:
+                children_of_parent = parent_to_children.get(parent_id, [])
+                for child_id in children_of_parent:
+                    if child_id != person.id:  # Exclude self
+                        if child_id not in sibling_to_shared_parents:
+                            sibling_to_shared_parents[child_id] = set()
+                        sibling_to_shared_parents[child_id].add(parent_id)
+
+            if not sibling_to_shared_parents:
+                continue
+
+            # Group siblings by their shared parent set
+            parent_set_to_siblings: dict[frozenset[UUID], list[UUID]] = {}
+            for sibling_id, shared_parent_ids in sibling_to_shared_parents.items():
+                key = frozenset(shared_parent_ids)
+                if key not in parent_set_to_siblings:
+                    parent_set_to_siblings[key] = []
+                parent_set_to_siblings[key].append(sibling_id)
+
+            # Build SiblingGroupExport objects
+            sibling_groups: list[SiblingGroupExport] = []
+            for parent_set, sib_ids in parent_set_to_siblings.items():
+                # Get parent names sorted alphabetically
+                parent_names = tuple(sorted(
+                    person_id_to_name.get(pid, "Unknown") for pid in parent_set
+                ))
+                sibling_groups.append(SiblingGroupExport(
+                    parent_names=parent_names,
+                    sibling_ids=sib_ids,
+                ))
+
+            result[person.id] = sibling_groups
 
         return result
 

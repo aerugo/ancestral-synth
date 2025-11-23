@@ -392,6 +392,7 @@ def show(
     """Show details of a specific person."""
     from sqlmodel import select
     from ancestral_synth.persistence.tables import PersonTable
+    from ancestral_synth.persistence.relations import get_relations_summary
 
     async def _show() -> None:
         async with Database(db_path) as db:
@@ -424,6 +425,28 @@ def show(
                         console.print(f"  Death: {person.death_date}")
                     if person.death_place:
                         console.print(f"  Death Place: {person.death_place}")
+
+                    # Get family relations
+                    relations = await get_relations_summary(session, person.id)
+
+                    # Show parents
+                    if relations.parents:
+                        console.print(f"  Parents: {', '.join(relations.parents)}")
+
+                    # Show spouses
+                    if relations.spouses:
+                        console.print(f"  Spouses: {', '.join(relations.spouses)}")
+
+                    # Show children
+                    if relations.children:
+                        console.print(f"  Children: {', '.join(relations.children)}")
+
+                    # Show siblings grouped by parents
+                    if relations.sibling_groups:
+                        console.print()
+                        console.print("[bold]Siblings:[/bold]")
+                        for group in relations.sibling_groups:
+                            console.print(f"  {group.label}: {', '.join(group.sibling_names)}")
 
                     if person.biography:
                         console.print()
