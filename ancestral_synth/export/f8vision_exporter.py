@@ -39,6 +39,7 @@ class F8VisionExporter:
         title: str | None = None,
         centered_person_id: UUID | None = None,
         description: str | None = None,
+        truncate_descriptions: int | None = None,
     ) -> None:
         """Export all data to f8vision-web YAML format.
 
@@ -47,8 +48,9 @@ class F8VisionExporter:
             title: Optional title for the family tree.
             centered_person_id: Optional ID of person to center visualization on.
             description: Optional description of the family tree.
+            truncate_descriptions: If set, truncate biography fields to this many characters.
         """
-        data = await self._gather_data(title, centered_person_id, description)
+        data = await self._gather_data(title, centered_person_id, description, truncate_descriptions)
 
         # Use safe_dump with allow_unicode for proper character handling
         yaml.safe_dump(
@@ -65,6 +67,7 @@ class F8VisionExporter:
         title: str | None,
         centered_person_id: UUID | None,
         description: str | None,
+        truncate_descriptions: int | None = None,
     ) -> dict[str, Any]:
         """Gather all data for export in f8vision-web format."""
         async with self._db.session() as session:
@@ -92,6 +95,7 @@ class F8VisionExporter:
                 parent_to_children.get(person.id, []),
                 child_to_parents.get(person.id, []),
                 person_to_spouses.get(person.id, []),
+                truncate_descriptions,
             )
             for person in persons
         ]
@@ -127,6 +131,7 @@ class F8VisionExporter:
         child_ids: list[UUID],
         parent_ids: list[UUID],
         spouse_ids: list[UUID],
+        truncate_descriptions: int | None = None,
     ) -> dict[str, Any]:
         """Convert a person to f8vision-web format.
 
@@ -135,6 +140,7 @@ class F8VisionExporter:
             child_ids: List of this person's children's IDs.
             parent_ids: List of this person's parents' IDs.
             spouse_ids: List of this person's spouses' IDs.
+            truncate_descriptions: If set, truncate biography to this many characters.
 
         Returns:
             Dictionary in f8vision-web person format.
@@ -153,7 +159,10 @@ class F8VisionExporter:
 
         # Add biography if present
         if person.biography:
-            result["biography"] = person.biography
+            biography = person.biography
+            if truncate_descriptions and len(biography) > truncate_descriptions:
+                biography = biography[:truncate_descriptions] + "..."
+            result["biography"] = biography
 
         # Add relationship arrays (only if non-empty)
         if parent_ids:
