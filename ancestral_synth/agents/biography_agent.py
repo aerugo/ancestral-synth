@@ -6,7 +6,16 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import Biography, PersonSummary
+from ancestral_synth.utils.cost_tracker import TokenUsage
 from ancestral_synth.utils.retry import llm_retry
+
+
+@dataclass
+class BiographyResult:
+    """Result of biography generation including token usage."""
+
+    biography: Biography
+    usage: TokenUsage
 
 
 @dataclass
@@ -66,14 +75,14 @@ class BiographyAgent:
         )
 
     @llm_retry()
-    async def generate(self, context: BiographyContext) -> Biography:
+    async def generate(self, context: BiographyContext) -> BiographyResult:
         """Generate a biography for a person.
 
         Args:
             context: The context for biography generation.
 
         Returns:
-            A generated biography with content and word count.
+            A BiographyResult with biography content and token usage.
         """
         import time
 
@@ -87,7 +96,14 @@ class BiographyAgent:
         elapsed = time.perf_counter() - start
         verbose_log(f"      [biography] pydantic_ai.run() completed in {elapsed:.1f}s")
 
-        return result.output
+        # Extract token usage from result
+        usage_data = result.usage()
+        usage = TokenUsage(
+            input_tokens=usage_data.request_tokens or 0,
+            output_tokens=usage_data.response_tokens or 0,
+        )
+
+        return BiographyResult(biography=result.output, usage=usage)
 
     def _build_prompt(self, context: BiographyContext) -> str:
         """Build the user prompt from context."""

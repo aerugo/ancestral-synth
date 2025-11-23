@@ -1,10 +1,21 @@
 """Extraction agent for parsing biographies into structured data."""
 
+from dataclasses import dataclass
+
 from pydantic_ai import Agent
 
 from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import ExtractedData
+from ancestral_synth.utils.cost_tracker import TokenUsage
 from ancestral_synth.utils.retry import llm_retry
+
+
+@dataclass
+class ExtractionResult:
+    """Result of data extraction including token usage."""
+
+    data: ExtractedData
+    usage: TokenUsage
 
 EXTRACTION_SYSTEM_PROMPT = """You are an expert genealogist and data extraction specialist.
 
@@ -46,15 +57,19 @@ class ExtractionAgent:
         )
 
     @llm_retry()
-    async def extract(self, biography: str) -> ExtractedData:
+    async def extract(self, biography: str) -> ExtractionResult:
         """Extract structured data from a biography.
 
         Args:
             biography: The biography text to extract from.
 
         Returns:
-            Structured genealogical data.
+            ExtractionResult with data and token usage.
         """
+        import time
+
+        from ancestral_synth.utils.timing import verbose_log
+
         prompt = f"""Extract all genealogical data from this biography:
 
 ---
@@ -63,8 +78,21 @@ class ExtractionAgent:
 
 Return the extracted data as structured JSON following the schema."""
 
+        verbose_log(f"      [extraction] Prompt length: {len(prompt)} chars")
+
+        start = time.perf_counter()
         result = await self._agent.run(prompt)
-        return result.output
+        elapsed = time.perf_counter() - start
+        verbose_log(f"      [extraction] pydantic_ai.run() completed in {elapsed:.1f}s")
+
+        # Extract token usage from result
+        usage_data = result.usage()
+        usage = TokenUsage(
+            input_tokens=usage_data.request_tokens or 0,
+            output_tokens=usage_data.response_tokens or 0,
+        )
+
+        return ExtractionResult(data=result.output, usage=usage)
 
     @llm_retry()
     async def extract_with_hints(
@@ -72,7 +100,7 @@ Return the extracted data as structured JSON following the schema."""
         biography: str,
         expected_name: str | None = None,
         expected_birth_year: int | None = None,
-    ) -> ExtractedData:
+    ) -> ExtractionResult:
         """Extract data with hints for validation.
 
         Args:
@@ -81,7 +109,7 @@ Return the extracted data as structured JSON following the schema."""
             expected_birth_year: The expected approximate birth year.
 
         Returns:
-            Structured genealogical data.
+            ExtractionResult with data and token usage.
         """
         import time
 
@@ -107,4 +135,11 @@ Return the extracted data as structured JSON following the schema."""
         elapsed = time.perf_counter() - start
         verbose_log(f"      [extraction] pydantic_ai.run() completed in {elapsed:.1f}s")
 
-        return result.output
+        # Extract token usage from result
+        usage_data = result.usage()
+        usage = TokenUsage(
+            input_tokens=usage_data.request_tokens or 0,
+            output_tokens=usage_data.response_tokens or 0,
+        )
+
+        return ExtractionResult(data=result.output, usage=usage)

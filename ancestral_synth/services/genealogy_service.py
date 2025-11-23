@@ -15,6 +15,7 @@ from ancestral_synth.agents.correction_agent import CorrectionAgent
 from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.config import settings
+from ancestral_synth.utils.cost_tracker import CostTracker, format_cost, format_tokens
 from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
 from ancestral_synth.utils.timing import VerboseTimer, set_verbose_log_callback
 from ancestral_synth.domain.enums import (
@@ -82,6 +83,10 @@ class GenealogyService:
             RateLimitConfig(requests_per_minute=settings.llm_requests_per_minute)
         )
         self._timer = VerboseTimer(enabled=verbose)
+        self._verbose = verbose
+
+        # Initialize cost tracker
+        self._cost_tracker = CostTracker(settings.llm_provider, settings.llm_model)
 
         # Set up global verbose logging callback for retry module
         if verbose:
@@ -93,6 +98,11 @@ class GenealogyService:
     def timer(self) -> VerboseTimer:
         """Get the verbose timer for external access."""
         return self._timer
+
+    @property
+    def cost_tracker(self) -> CostTracker:
+        """Get the cost tracker for external access."""
+        return self._cost_tracker
 
     async def _validate_and_correct(
         self,
@@ -126,11 +136,20 @@ class GenealogyService:
             # Use correction agent to fix errors
             await self._acquire_rate_limit("data correction")
             with self._timer.time_operation("Data correction (LLM call)"):
-                current_data = await self._correction_agent.correct(
+                correction_result = await self._correction_agent.correct(
                     biography=biography,
                     extracted_data=current_data,
                     validation_errors=validation.errors,
                 )
+                current_data = correction_result.data
+
+                # Track correction cost
+                cost_result = self._cost_tracker.record_correction(correction_result.usage)
+                if self._verbose:
+                    self._timer.log(
+                        f"Correction cost: {format_cost(cost_result.total_cost)} "
+                        f"({format_tokens(correction_result.usage.total_tokens)} tokens)"
+                    )
 
             # Re-validate
             with self._timer.time_operation("Re-validation", show_start=False):
@@ -198,18 +217,41 @@ class GenealogyService:
         """Create a new seed person from scratch."""
         context = create_seed_context()
 
+        # Start tracking costs for this person
+        self._cost_tracker.start_person()
+
         # Generate biography (rate limited)
         logger.info(f"Generating biography for seed: {context.given_name} {context.surname}")
         self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
         await self._acquire_rate_limit("biography generation")
         with self._timer.time_operation("Biography generation (LLM call)"):
-            biography = await self._biography_agent.generate(context)
+            bio_result = await self._biography_agent.generate(context)
+            biography = bio_result.biography
+
+            # Track biography cost
+            bio_cost = self._cost_tracker.record_biography(bio_result.usage)
+            if self._verbose:
+                self._timer.log(
+                    f"Biography cost: {format_cost(bio_cost.total_cost)} "
+                    f"({format_tokens(bio_result.usage.total_tokens)} tokens)"
+                )
+
         self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
         await self._acquire_rate_limit("data extraction")
         with self._timer.time_operation("Data extraction (LLM call)"):
-            extracted = await self._extraction_agent.extract(biography.content)
+            extract_result = await self._extraction_agent.extract(biography.content)
+            extracted = extract_result.data
+
+            # Track extraction cost
+            extract_cost = self._cost_tracker.record_extraction(extract_result.usage)
+            if self._verbose:
+                self._timer.log(
+                    f"Extraction cost: {format_cost(extract_cost.total_cost)} "
+                    f"({format_tokens(extract_result.usage.total_tokens)} tokens)"
+                )
+
         self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
         # Validate and correct if needed
@@ -244,6 +286,16 @@ class GenealogyService:
             with self._timer.time_operation("Process references", show_start=False):
                 await self._process_references(session, person, extracted)
 
+        # Finish tracking costs for this person
+        person_cost = self._cost_tracker.finish_person()
+        if self._verbose and person_cost:
+            self._timer.log(
+                f"[bold]Person cost: {format_cost(person_cost.total_cost)}[/bold] "
+                f"({person_cost.llm_call_count} LLM calls, "
+                f"{format_tokens(person_cost.total_tokens.total_tokens)} tokens) | "
+                f"Running total: {format_cost(self._cost_tracker.running_total)}"
+            )
+
         logger.info(f"Created seed person: {person.full_name} (ID: {person.id})")
         return person
 
@@ -271,6 +323,9 @@ class GenealogyService:
                 generation=db_person.generation,
             )
 
+        # Start tracking costs for this person
+        self._cost_tracker.start_person()
+
         # Generate biography (rate limited)
         logger.info(f"Generating biography for: {db_person.given_name} {db_person.surname}")
         self._timer.log(f"Generating ~{settings.biography_word_count}-word biography using {settings.llm_provider}:{settings.llm_model}")
@@ -278,17 +333,37 @@ class GenealogyService:
             self._timer.log(f"Context includes {len(relatives)} known relative(s)")
         await self._acquire_rate_limit("biography generation")
         with self._timer.time_operation("Biography generation (LLM call)"):
-            biography = await self._biography_agent.generate(context)
+            bio_result = await self._biography_agent.generate(context)
+            biography = bio_result.biography
+
+            # Track biography cost
+            bio_cost = self._cost_tracker.record_biography(bio_result.usage)
+            if self._verbose:
+                self._timer.log(
+                    f"Biography cost: {format_cost(bio_cost.total_cost)} "
+                    f"({format_tokens(bio_result.usage.total_tokens)} tokens)"
+                )
+
         self._timer.log(f"Generated {biography.word_count} words")
 
         # Extract data (rate limited)
         await self._acquire_rate_limit("data extraction")
         with self._timer.time_operation("Data extraction (LLM call)"):
-            extracted = await self._extraction_agent.extract_with_hints(
+            extract_result = await self._extraction_agent.extract_with_hints(
                 biography.content,
                 expected_name=f"{db_person.given_name} {db_person.surname}",
                 expected_birth_year=db_person.birth_date.year if db_person.birth_date else None,
             )
+            extracted = extract_result.data
+
+            # Track extraction cost
+            extract_cost = self._cost_tracker.record_extraction(extract_result.usage)
+            if self._verbose:
+                self._timer.log(
+                    f"Extraction cost: {format_cost(extract_cost.total_cost)} "
+                    f"({format_tokens(extract_result.usage.total_tokens)} tokens)"
+                )
+
         self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
         # Validate and correct if needed
@@ -321,6 +396,16 @@ class GenealogyService:
                 self._timer.log(f"Processing {num_refs} family reference(s)")
             with self._timer.time_operation("Process references", show_start=False):
                 await self._process_references(session, person_repo.to_domain(db_person), extracted)
+
+            # Finish tracking costs for this person
+            person_cost = self._cost_tracker.finish_person()
+            if self._verbose and person_cost:
+                self._timer.log(
+                    f"[bold]Person cost: {format_cost(person_cost.total_cost)}[/bold] "
+                    f"({person_cost.llm_call_count} LLM calls, "
+                    f"{format_tokens(person_cost.total_tokens.total_tokens)} tokens) | "
+                    f"Running total: {format_cost(self._cost_tracker.running_total)}"
+                )
 
             # Refresh person
             db_person = await person_repo.get_by_id(person_id)
@@ -589,9 +674,18 @@ class GenealogyService:
             self._timer.log(f"Checking {len(candidate_summaries)} candidate(s) for duplicate: {reference.name}")
             await self._acquire_rate_limit("deduplication check")
             with self._timer.time_operation("Deduplication check (LLM call)"):
-                dedup_result = await self._dedup_agent.check_duplicate(
+                dedup_result_with_usage = await self._dedup_agent.check_duplicate(
                     new_summary, candidate_summaries
                 )
+                dedup_result = dedup_result_with_usage.result
+
+                # Track dedup cost
+                dedup_cost = self._cost_tracker.record_dedup(dedup_result_with_usage.usage)
+                if self._verbose:
+                    self._timer.log(
+                        f"Dedup cost: {format_cost(dedup_cost.total_cost)} "
+                        f"({format_tokens(dedup_result_with_usage.usage.total_tokens)} tokens)"
+                    )
 
             if dedup_result.is_duplicate and dedup_result.matched_person_id:
                 logger.info(
