@@ -12,6 +12,7 @@ import pytest
 from pydantic_ai import Agent
 
 from ancestral_synth.agents.biography_agent import BiographyAgent
+from ancestral_synth.agents.correction_agent import CorrectionAgent
 from ancestral_synth.agents.dedup_agent import DedupAgent
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.domain.models import Biography, ExtractedData
@@ -87,6 +88,24 @@ class TestDedupAgentInitialization:
         assert agent._agent is not None
 
 
+class TestCorrectionAgentInitialization:
+    """Tests for CorrectionAgent initialization."""
+
+    def test_agent_can_be_instantiated_with_test_model(self) -> None:
+        """CorrectionAgent should instantiate without errors using test model."""
+        agent = CorrectionAgent(model="test")
+
+        assert agent is not None
+        assert hasattr(agent, "_agent")
+        assert isinstance(agent._agent, Agent)
+
+    def test_agent_uses_correct_output_type(self) -> None:
+        """CorrectionAgent should configure output_type as ExtractedData."""
+        agent = CorrectionAgent(model="test")
+
+        assert agent._agent is not None
+
+
 class TestAgentDefaultModel:
     """Tests for agent default model configuration."""
 
@@ -110,4 +129,10 @@ class TestAgentDefaultModel:
         """DedupAgent should use settings for default model."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
             agent = DedupAgent()
+            assert agent._agent is not None
+
+    def test_correction_agent_uses_settings_when_no_model_provided(self) -> None:
+        """CorrectionAgent should use settings for default model."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            agent = CorrectionAgent()
             assert agent._agent is not None

@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     min_parent_age: int = Field(default=14, description="Minimum age to become a parent")
     max_parent_age: int = Field(default=60, description="Maximum age to become a parent")
     max_lifespan: int = Field(default=120, description="Maximum realistic lifespan")
+    max_correction_attempts: int = Field(
+        default=2,
+        description="Maximum attempts to correct validation errors before giving up",
+    )
 
 
 settings = Settings()

@@ -11,6 +11,7 @@ from ancestral_synth.agents.biography_agent import (
     BiographyContext,
     create_seed_context,
 )
+from ancestral_synth.agents.correction_agent import CorrectionAgent
 from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.config import settings
@@ -50,6 +51,7 @@ class GenealogyService:
         db: Database,
         biography_agent: BiographyAgent | None = None,
         extraction_agent: ExtractionAgent | None = None,
+        correction_agent: CorrectionAgent | None = None,
         dedup_agent: DedupAgent | None = None,
         validator: Validator | None = None,
         rate_limiter: RateLimiter | None = None,
@@ -61,6 +63,7 @@ class GenealogyService:
             db: Database connection.
             biography_agent: Agent for generating biographies.
             extraction_agent: Agent for extracting data.
+            correction_agent: Agent for correcting validation errors.
             dedup_agent: Agent for deduplication.
             validator: Validator for genealogical plausibility.
             rate_limiter: Rate limiter for LLM API calls.
@@ -69,6 +72,7 @@ class GenealogyService:
         self._db = db
         self._biography_agent = biography_agent or BiographyAgent()
         self._extraction_agent = extraction_agent or ExtractionAgent()
+        self._correction_agent = correction_agent or CorrectionAgent()
         self._dedup_agent = dedup_agent or DedupAgent()
         self._validator = validator or Validator()
         self._rate_limiter = rate_limiter or RateLimiter(
@@ -86,6 +90,62 @@ class GenealogyService:
     def timer(self) -> VerboseTimer:
         """Get the verbose timer for external access."""
         return self._timer
+
+    async def _validate_and_correct(
+        self,
+        biography: str,
+        extracted: ExtractedData,
+    ) -> tuple[ExtractedData, ValidationResult]:
+        """Validate extracted data and attempt to correct any errors.
+
+        Uses an agentic loop to fix validation errors up to max_correction_attempts.
+
+        Args:
+            biography: The original biography text.
+            extracted: The extracted data to validate.
+
+        Returns:
+            Tuple of (possibly corrected data, final validation result).
+        """
+        # Initial validation
+        with self._timer.time_operation("Validation", show_start=False):
+            validation = self._validator.validate_extracted_data(extracted)
+
+        if validation.is_valid:
+            return extracted, validation
+
+        # Attempt corrections
+        current_data = extracted
+        for attempt in range(settings.max_correction_attempts):
+            logger.warning(f"Validation errors (attempt {attempt + 1}): {validation.errors}")
+            self._timer.log(f"Attempting correction ({attempt + 1}/{settings.max_correction_attempts})")
+
+            # Use correction agent to fix errors
+            await self._acquire_rate_limit("data correction")
+            with self._timer.time_operation("Data correction (LLM call)"):
+                current_data = await self._correction_agent.correct(
+                    biography=biography,
+                    extracted_data=current_data,
+                    validation_errors=validation.errors,
+                )
+
+            # Re-validate
+            with self._timer.time_operation("Re-validation", show_start=False):
+                validation = self._validator.validate_extracted_data(current_data)
+
+            if validation.is_valid:
+                logger.info(f"Correction successful after {attempt + 1} attempt(s)")
+                self._timer.log("Correction successful - data is now valid")
+                return current_data, validation
+
+        # Max attempts reached, log remaining errors
+        if not validation.is_valid:
+            logger.warning(
+                f"Could not fix all validation errors after {settings.max_correction_attempts} attempts: "
+                f"{validation.errors}"
+            )
+
+        return current_data, validation
 
     async def process_next(self) -> Person | None:
         """Process the next person in the queue.
@@ -149,11 +209,10 @@ class GenealogyService:
             extracted = await self._extraction_agent.extract(biography.content)
         self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
-        # Validate
-        with self._timer.time_operation("Validation", show_start=False):
-            validation = self._validator.validate_extracted_data(extracted)
-        if not validation.is_valid:
-            logger.warning(f"Validation errors for seed: {validation.errors}")
+        # Validate and correct if needed
+        extracted, validation = await self._validate_and_correct(biography.content, extracted)
+        for warning in validation.warnings:
+            logger.warning(f"Validation warning: {warning}")
 
         # Create person record
         person = Person(
@@ -229,11 +288,8 @@ class GenealogyService:
             )
         self._timer.log(f"Extracted {len(extracted.parents)} parents, {len(extracted.children)} children, {len(extracted.events)} events")
 
-        # Validate
-        with self._timer.time_operation("Validation", show_start=False):
-            validation = self._validator.validate_extracted_data(extracted)
-        if not validation.is_valid:
-            logger.warning(f"Validation errors: {validation.errors}")
+        # Validate and correct if needed
+        extracted, validation = await self._validate_and_correct(biography.content, extracted)
         for warning in validation.warnings:
             logger.warning(f"Validation warning: {warning}")
 
