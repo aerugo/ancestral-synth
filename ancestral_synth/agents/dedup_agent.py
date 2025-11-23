@@ -170,7 +170,7 @@ CRITICAL NAMING PATTERNS TO RECOGNIZE:
    - Jr., Sr., III, etc. distinguish different people in the same family
    - These should NOT be ignored - they indicate different individuals
 
-5. FAMILY CONTEXT (STRONGEST SIGNAL):
+5. FAMILY CONTEXT:
    - If both people share ANY of the same parents, children, or spouse = VERY LIKELY MATCH
    - Shared family members are strong evidence of being the same person
    - Same generation number + same family context = STRONG MATCH
@@ -178,20 +178,50 @@ CRITICAL NAMING PATTERNS TO RECOGNIZE:
 6. BIOGRAPHY MENTION CONTEXT:
    - If the new person was mentioned in a family member's biography, they likely exist in the tree
    - Example: "William Brown" mentioned in "Mary Brown's" biography is likely her relative
+   - READ THE BIOGRAPHY SNIPPETS CAREFULLY - they show how a name is actually used in context
+
+CRITICAL: DETECTING DIFFERENT PEOPLE WITH THE SAME NAME
+
+Be alert to these patterns that indicate DIFFERENT people who happen to share a first name:
+
+1. CONFLICTING RELATIONSHIP TYPES:
+   - If snippets show the name as BOTH "sister" AND "wife" of the same person = TWO DIFFERENT PEOPLE
+   - Example: "His sister Eleanor" vs "His wife Eleanor" = NOT the same Eleanor
+   - A sibling relationship CANNOT coexist with a spouse/coparent relationship (this would be incest)
+   - A parent cannot also be a sibling of the same person
+
+2. CONFLICTING FAMILY ROLES:
+   - If a candidate is listed as someone's SIBLING but the new person is that same person's SPOUSE = DIFFERENT people
+   - If biography snippets show different relationship contexts = DIFFERENT people
+   - Pay close attention to words like: wife, husband, sister, brother, mother, father, daughter, son
+
+3. MULTIPLE PEOPLE WITH SAME NAME IN A FAMILY:
+   - Families often have multiple relatives with the same first name (named after each other)
+   - A man might have both a sister named Eleanor AND a wife named Eleanor
+   - Look at the relationship context to distinguish between them
+
+4. SAME GENERATION, DIFFERENT ROLES:
+   - Two people in the same generation with the same first name but different relationship types are DIFFERENT people
+   - Example: Eleanor (sibling) and Eleanor (spouse) in generation 3 = TWO DIFFERENT PEOPLE
+
+REASONING STEPS FOR EACH CANDIDATE:
+1. Check for CONFLICTING relationships first - if found, they are DIFFERENT people
+2. Read biography snippets to understand the actual relationship context
+3. Check if family members overlap (shared parents/children/spouse)
+4. Compare names, birth years, and other attributes
+5. Only merge if NO conflicting evidence exists
 
 MATCHING GUIDELINES (in order of strength):
-1. SHARED FAMILY MEMBERS = STRONGEST SIGNAL - If parents, children, or spouse overlap, likely same person
-2. Same first name + same surname + same birth year (±2 years) = LIKELY MATCH
-3. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
-4. Same first name + added/missing middle name + same surname + same birth year = LIKELY MATCH
-5. First name + maiden surname appears in full name = LIKELY MATCH
-6. Same generation + similar name + family context = LIKELY MATCH
-7. Gender MUST match for a duplicate
-8. If birth years differ by more than 5 years WITHOUT family context match, probably NOT a match
+1. CONFLICTING RELATIONSHIPS = DEFINITE NON-MATCH - If relationships conflict, different people
+2. SHARED FAMILY MEMBERS with matching relationships = LIKELY MATCH
+3. Same first name + same surname + same birth year (±2 years) = POSSIBLE MATCH (verify context)
+4. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
+5. Gender MUST match for a duplicate
+6. If birth years differ by more than 5 years, probably NOT a match
 
-When family relationships overlap, be CONFIDENT in marking as duplicate.
-When there's no family context, be more careful about name-only matches.
-False non-merges create duplicates that clutter the genealogy - avoid them when evidence is strong."""
+BE CONSERVATIVE: False merges are WORSE than false non-merges.
+Merging two different people corrupts the genealogy permanently.
+When in doubt, mark as NOT a duplicate."""
 
 
 class DedupAgent:
@@ -312,6 +342,14 @@ class DedupAgent:
                 for fact in candidate.key_facts:
                     parts.append(f"      - {fact}")
 
+            # Add biography snippets showing how this person's name is mentioned
+            if candidate.biography_snippets:
+                parts.append("    Biography mentions of this name from relatives:")
+                for snippet in candidate.biography_snippets:
+                    # Truncate very long snippets
+                    display_snippet = snippet[:400] + "..." if len(snippet) > 400 else snippet
+                    parts.append(f"      \"{display_snippet}\"")
+
         parts.append("")
         parts.append("Is the new person a duplicate of any candidate? If so, which one?")
 
@@ -422,3 +460,40 @@ def heuristic_match_score(
         # Years far apart = no year bonus (year_score stays 0)
 
     return max(0.0, min(name_score + year_score, 1.0))
+
+
+def extract_name_mentions(
+    first_name: str,
+    biography: str | None,
+    padding: int = 300,
+) -> list[str]:
+    """Extract snippets from biography around mentions of a first name.
+
+    Uses regex to find whole-word matches of the first name and extracts
+    surrounding context to help understand the relationship.
+
+    Args:
+        first_name: The first name to search for.
+        biography: The biography text to search in.
+        padding: Number of characters before and after to include.
+
+    Returns:
+        List of snippets containing the name with surrounding context.
+    """
+    if not biography or not first_name:
+        return []
+
+    # Build regex for whole-word match (case insensitive)
+    pattern = re.compile(
+        rf"\b{re.escape(first_name)}\b",
+        re.IGNORECASE,
+    )
+
+    snippets = []
+    for match in pattern.finditer(biography):
+        start = max(0, match.start() - padding)
+        end = min(len(biography), match.end() + padding)
+        snippet = biography[start:end]
+        snippets.append(snippet)
+
+    return snippets
