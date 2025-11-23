@@ -14,6 +14,7 @@ from ancestral_synth.agents.biography_agent import (
 from ancestral_synth.agents.correction_agent import CorrectionAgent
 from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
+from ancestral_synth.agents.shared_event_agent import SharedEventAgent
 from ancestral_synth.config import settings
 from ancestral_synth.utils.cost_tracker import CostTracker, format_cost, format_tokens
 from ancestral_synth.utils.rate_limiter import RateLimitConfig, RateLimiter
@@ -57,6 +58,7 @@ class GenealogyService:
         extraction_agent: ExtractionAgent | None = None,
         correction_agent: CorrectionAgent | None = None,
         dedup_agent: DedupAgent | None = None,
+        shared_event_agent: SharedEventAgent | None = None,
         validator: Validator | None = None,
         rate_limiter: RateLimiter | None = None,
         verbose: bool = False,
@@ -69,6 +71,7 @@ class GenealogyService:
             extraction_agent: Agent for extracting data.
             correction_agent: Agent for correcting validation errors.
             dedup_agent: Agent for deduplication.
+            shared_event_agent: Agent for analyzing shared events between people.
             validator: Validator for genealogical plausibility.
             rate_limiter: Rate limiter for LLM API calls.
             verbose: Enable verbose output with timing information.
@@ -78,6 +81,7 @@ class GenealogyService:
         self._extraction_agent = extraction_agent or ExtractionAgent()
         self._correction_agent = correction_agent or CorrectionAgent()
         self._dedup_agent = dedup_agent or DedupAgent()
+        self._shared_event_agent = shared_event_agent or SharedEventAgent()
         self._validator = validator or Validator()
         self._rate_limiter = rate_limiter or RateLimiter(
             RateLimitConfig(requests_per_minute=settings.llm_requests_per_minute)
@@ -554,7 +558,7 @@ class GenealogyService:
         # Process parents - these get queued
         for parent_ref in extracted.parents:
             parent_id = await self._resolve_person_reference(
-                session, parent_ref, person.generation - 1
+                session, parent_ref, person.generation - 1, new_person=person
             )
             if parent_id and not await child_link_repo.exists(parent_id, person.id):
                 await child_link_repo.create(ChildLink(parent_id=parent_id, child_id=person.id))
@@ -567,7 +571,7 @@ class GenealogyService:
         # Process children - these get queued
         for child_ref in extracted.children:
             child_id = await self._resolve_person_reference(
-                session, child_ref, person.generation + 1
+                session, child_ref, person.generation + 1, new_person=person
             )
             if child_id and not await child_link_repo.exists(person.id, child_id):
                 await child_link_repo.create(ChildLink(parent_id=person.id, child_id=child_id))
@@ -580,7 +584,7 @@ class GenealogyService:
         # Process spouses - create spouse links
         for spouse_ref in extracted.spouses:
             spouse_id = await self._resolve_person_reference(
-                session, spouse_ref, person.generation
+                session, spouse_ref, person.generation, new_person=person
             )
             if spouse_id and not await spouse_link_repo.exists(person.id, spouse_id):
                 await spouse_link_repo.create(
@@ -589,12 +593,16 @@ class GenealogyService:
 
         # Process siblings - stay pending
         for sibling_ref in extracted.siblings:
-            await self._resolve_person_reference(session, sibling_ref, person.generation)
+            await self._resolve_person_reference(
+                session, sibling_ref, person.generation, new_person=person
+            )
 
         # Process other relatives - stay pending
         for other_ref in extracted.other_relatives:
             # Estimate generation based on relationship context
-            await self._resolve_person_reference(session, other_ref, person.generation)
+            await self._resolve_person_reference(
+                session, other_ref, person.generation, new_person=person
+            )
 
         # Process events (convert ExtractedEvent to Event with person's ID)
         for extracted_event in extracted.events:
@@ -616,8 +624,19 @@ class GenealogyService:
         session,  # noqa: ANN001
         reference: PersonReference,
         generation: int,
+        new_person: Person | None = None,
     ) -> UUID | None:
-        """Resolve a person reference - find existing or create pending record."""
+        """Resolve a person reference - find existing or create pending record.
+
+        Args:
+            session: Database session.
+            reference: The person reference to resolve.
+            generation: The generation number for the referenced person.
+            new_person: The person whose biography was just processed (for shared event analysis).
+
+        Returns:
+            The UUID of the resolved person, or None if the reference is invalid.
+        """
         person_repo = PersonRepository(session)
 
         # Validate reference
@@ -688,11 +707,24 @@ class GenealogyService:
                     )
 
             if dedup_result.is_duplicate and dedup_result.matched_person_id:
+                matched_id = UUID(dedup_result.matched_person_id)
                 logger.info(
                     f"Matched '{reference.name}' to existing person "
                     f"(confidence: {dedup_result.confidence:.2f})"
                 )
-                return UUID(dedup_result.matched_person_id)
+
+                # Evaluate shared events if the new person has a biography
+                if new_person is not None and new_person.biography is not None:
+                    # Get the inverse relationship (existing person's relationship to new person)
+                    inverse_relationship = self._get_inverse_relationship(reference.relationship)
+                    await self._evaluate_shared_events(
+                        session,
+                        existing_person_id=matched_id,
+                        new_person=new_person,
+                        relationship=inverse_relationship,
+                    )
+
+                return matched_id
 
         # No match found - create pending record
         birth_date = None
@@ -711,6 +743,135 @@ class GenealogyService:
         await person_repo.create(new_person)
         logger.info(f"Created pending person: {new_person.full_name} (gen {generation})")
         return new_person.id
+
+    def _get_inverse_relationship(self, relationship: RelationshipType) -> RelationshipType:
+        """Get the inverse of a relationship type.
+
+        For example, if person A is the PARENT of person B, then person B is the CHILD of person A.
+
+        Args:
+            relationship: The relationship from one person's perspective.
+
+        Returns:
+            The relationship from the other person's perspective.
+        """
+        inverse_map = {
+            RelationshipType.PARENT: RelationshipType.CHILD,
+            RelationshipType.CHILD: RelationshipType.PARENT,
+            RelationshipType.SPOUSE: RelationshipType.SPOUSE,
+            RelationshipType.SIBLING: RelationshipType.SIBLING,
+            RelationshipType.GRANDPARENT: RelationshipType.GRANDCHILD,
+            RelationshipType.GRANDCHILD: RelationshipType.GRANDPARENT,
+            RelationshipType.UNCLE: RelationshipType.NEPHEW,  # Simplified - could be niece
+            RelationshipType.AUNT: RelationshipType.NIECE,  # Simplified - could be nephew
+            RelationshipType.COUSIN: RelationshipType.COUSIN,
+            RelationshipType.NIECE: RelationshipType.AUNT,  # Simplified - could be uncle
+            RelationshipType.NEPHEW: RelationshipType.UNCLE,  # Simplified - could be aunt
+            RelationshipType.OTHER: RelationshipType.OTHER,
+        }
+        return inverse_map.get(relationship, RelationshipType.OTHER)
+
+    async def _evaluate_shared_events(
+        self,
+        session,  # noqa: ANN001
+        existing_person_id: UUID,
+        new_person: Person,
+        relationship: RelationshipType,
+    ) -> None:
+        """Evaluate if an existing person's biography should be updated with shared events.
+
+        When a new biography references an existing person, this method analyzes both
+        biographies to identify shared events or new context that should be added to
+        the existing person's record.
+
+        Args:
+            session: Database session.
+            existing_person_id: ID of the existing person (already has a biography).
+            new_person: The person whose biography was just processed.
+            relationship: The relationship of the existing person to the new person.
+        """
+        person_repo = PersonRepository(session)
+        event_repo = EventRepository(session)
+        note_repo = NoteRepository(session)
+
+        # Get the existing person
+        existing_db_person = await person_repo.get_by_id(existing_person_id)
+        if existing_db_person is None or existing_db_person.biography is None:
+            return
+
+        # Only evaluate if the existing person has a complete biography
+        if existing_db_person.status != PersonStatus.COMPLETE:
+            return
+
+        # Skip if the new person doesn't have a biography
+        if new_person.biography is None:
+            return
+
+        existing_name = f"{existing_db_person.given_name} {existing_db_person.surname}"
+        new_name = new_person.full_name
+
+        self._timer.log(f"Evaluating shared events between {new_name} and {existing_name}")
+
+        # Call the shared event agent (rate limited)
+        await self._acquire_rate_limit("shared event analysis")
+        with self._timer.time_operation("Shared event analysis (LLM call)"):
+            analysis_result = await self._shared_event_agent.analyze(
+                existing_person_name=existing_name,
+                existing_person_biography=existing_db_person.biography,
+                new_person_name=new_name,
+                new_person_biography=new_person.biography,
+                relationship=relationship,
+            )
+
+            # Track cost
+            analysis_cost = self._cost_tracker.record_dedup(analysis_result.usage)
+            if self._verbose:
+                self._timer.log(
+                    f"Shared event analysis cost: {format_cost(analysis_cost.total_cost)} "
+                    f"({format_tokens(analysis_result.usage.total_tokens)} tokens)"
+                )
+
+        analysis = analysis_result.analysis
+
+        if not analysis.should_update:
+            self._timer.log(f"No updates needed for {existing_name}")
+            return
+
+        # Process shared events
+        events_added = 0
+        for shared_event in analysis.shared_events:
+            event = Event(
+                event_type=shared_event.event_type,
+                event_year=shared_event.event_year,
+                location=shared_event.location,
+                description=shared_event.description,
+                primary_person_id=existing_person_id,
+                other_person_ids=[new_person.id],  # Link to the person who mentioned this
+            )
+            await event_repo.create(event)
+            events_added += 1
+
+        # Process discovered context as notes
+        notes_added = 0
+        for context in analysis.discovered_context:
+            note = Note(
+                person_id=existing_person_id,
+                category=NoteCategory.CROSS_BIOGRAPHY,
+                content=f"{context.content} ({context.significance})",
+                source=f"cross_biography:{new_person.id}",
+                referenced_person_ids=[new_person.id],
+            )
+            await note_repo.create(note)
+            notes_added += 1
+
+        if events_added > 0 or notes_added > 0:
+            logger.info(
+                f"Updated {existing_name} with {events_added} shared event(s) "
+                f"and {notes_added} note(s) from {new_name}'s biography"
+            )
+            self._timer.log(
+                f"Added {events_added} event(s) and {notes_added} note(s) to {existing_name}"
+            )
 
     def _forest_fire_sample(self, persons: list) -> "PersonTable":  # type: ignore[name-defined]
         """Use forest fire sampling to select a person.
