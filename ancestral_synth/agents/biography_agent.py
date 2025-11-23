@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent
 
-from ancestral_synth.config import settings
+from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import Biography, PersonSummary
 from ancestral_synth.utils.retry import llm_retry
 
@@ -57,7 +57,7 @@ class BiographyAgent:
             model: The model to use (e.g., "openai:gpt-4o-mini", "anthropic:claude-3-haiku").
                    Defaults to settings.llm_model.
         """
-        model_name = model or f"{settings.llm_provider}:{settings.llm_model}"
+        model_name = model or f"{get_pydantic_ai_provider()}:{settings.llm_model}"
 
         self._agent = Agent(
             model_name,
@@ -76,6 +76,7 @@ class BiographyAgent:
             A generated biography with content and word count.
         """
         import time
+
         from ancestral_synth.utils.timing import verbose_log
 
         prompt = self._build_prompt(context)

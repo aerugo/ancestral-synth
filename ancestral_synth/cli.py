@@ -1,8 +1,14 @@
 """Command-line interface for Ancestral Synth."""
 
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv()  # Load .env file before any other imports that need API keys
+
+# Map GOOGLE_AI_STUDIO_API_KEY to GEMINI_API_KEY if set (pydantic-ai expects GEMINI_API_KEY)
+if os.environ.get("GOOGLE_AI_STUDIO_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_AI_STUDIO_API_KEY"]
 
 import asyncio
 from pathlib import Path
@@ -38,8 +44,9 @@ def configure_logging(verbose: bool = False) -> None:
     )
 
 
-# Cache for OpenAI models (fetched once per session)
+# Cache for models (fetched once per session)
 _openai_models_cache: set[str] | None = None
+_google_models_cache: set[str] | None = None
 
 
 def _fetch_openai_models() -> set[str] | None:
@@ -79,6 +86,44 @@ def _fetch_openai_models() -> set[str] | None:
         return None
 
 
+def _fetch_google_models() -> set[str] | None:
+    """Fetch available models from Google AI Studio API.
+
+    Returns:
+        Set of model IDs, or None if fetching failed.
+    """
+    global _google_models_cache
+
+    if _google_models_cache is not None:
+        return _google_models_cache
+
+    try:
+        from google import genai
+
+        # Check if API key is available
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_AI_STUDIO_API_KEY")
+        if not api_key:
+            return None
+
+        client = genai.Client(api_key=api_key)
+        models = client.models.list()
+
+        # Filter to Gemini models that support generateContent
+        gemini_models = set()
+        for model in models:
+            # Model names come as "models/gemini-2.0-flash" - extract just the model part
+            model_id = model.name.replace("models/", "") if model.name.startswith("models/") else model.name
+            if model_id.startswith("gemini"):
+                gemini_models.add(model_id)
+
+        _google_models_cache = gemini_models
+        return gemini_models
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch Google models: {e}")
+        return None
+
+
 def _validate_model_name() -> None:
     """Warn if model name looks invalid."""
     model = settings.llm_model
@@ -104,6 +149,28 @@ def _validate_model_name() -> None:
             )
             if relevant_models:
                 console.print(f"  Some available models: {', '.join(relevant_models[:15])}")
+            console.print("  This may cause API errors and slow retries.")
+            console.print()
+
+    elif provider == "google":
+        known_models = _fetch_google_models()
+
+        if known_models is None:
+            # Could not fetch models, skip validation
+            return
+
+        if model not in known_models:
+            console.print(
+                f"[bold yellow]⚠ Warning:[/bold yellow] "
+                f"Model '{model}' is not a known Google AI Studio model."
+            )
+            # Show a subset of relevant models for readability
+            relevant_models = sorted(
+                m for m in known_models
+                if m.startswith(("gemini-2", "gemini-1.5", "gemini-flash", "gemini-pro"))
+            )
+            if relevant_models:
+                console.print(f"  Some available models: {', '.join(relevant_models[:10])}")
             console.print("  This may cause API errors and slow retries.")
             console.print()
 
