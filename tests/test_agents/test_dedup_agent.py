@@ -469,3 +469,54 @@ class TestDedupAgentPromptBuilding:
 
         assert "generation" in prompt.lower()
         assert "4" in prompt
+
+    def test_build_prompt_includes_biography_snippets_for_candidates(self) -> None:
+        """Should include biography snippets showing name mentions."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="Eleanor Smith",
+            gender=Gender.FEMALE,
+        )
+
+        candidates = [
+            PersonSummary(
+                id=uuid4(),
+                full_name="Eleanor A. Smith",
+                gender=Gender.FEMALE,
+                biography_snippets=[
+                    "His wife Eleanor was known for her kindness",
+                    "His sister Eleanor helped on the farm",
+                ],
+            ),
+        ]
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        # Biography snippets should be in prompt
+        assert "wife Eleanor" in prompt
+        assert "sister Eleanor" in prompt
+
+    def test_build_prompt_no_snippets_when_empty(self) -> None:
+        """Should not include snippet section when no snippets available."""
+        agent = DedupAgent.__new__(DedupAgent)
+
+        new_person = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        candidates = [
+            PersonSummary(
+                id=uuid4(),
+                full_name="John A. Smith",
+                gender=Gender.MALE,
+                biography_snippets=[],
+            ),
+        ]
+
+        prompt = agent._build_prompt(new_person, candidates)
+
+        assert "Biography mentions" not in prompt

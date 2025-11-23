@@ -12,7 +12,12 @@ from ancestral_synth.agents.biography_agent import (
     create_seed_context,
 )
 from ancestral_synth.agents.correction_agent import CorrectionAgent
-from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score, parse_name
+from ancestral_synth.agents.dedup_agent import (
+    DedupAgent,
+    extract_name_mentions,
+    heuristic_match_score,
+    parse_name,
+)
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.agents.shared_event_agent import SharedEventAgent
 from ancestral_synth.config import settings
@@ -703,6 +708,14 @@ class GenealogyService:
                 summary.grandparents = relations.grandparents
                 summary.grandchildren = relations.grandchildren
                 summary.generation = candidate_db.generation
+
+                # Extract biography snippets from relatives mentioning this name
+                first_name = candidate_db.given_name
+                biography_snippets = await self._extract_relative_biography_snippets(
+                    session, candidate_db.id, first_name
+                )
+                summary.biography_snippets = biography_snippets
+
                 candidate_summaries.append(summary)
 
             # Check duplicates (rate limited)
@@ -760,6 +773,70 @@ class GenealogyService:
         await person_repo.create(new_person)
         logger.info(f"Created pending person: {new_person.full_name} (gen {generation})")
         return new_person.id
+
+    async def _extract_relative_biography_snippets(
+        self,
+        session,  # noqa: ANN001
+        person_id: UUID,
+        first_name: str,
+    ) -> list[str]:
+        """Extract biography snippets from relatives that mention a first name.
+
+        This helps identify how a person is referred to in their relatives' biographies,
+        which can distinguish between different people with the same first name
+        (e.g., someone's sister Eleanor vs their wife Eleanor).
+
+        Args:
+            session: Database session.
+            person_id: ID of the person to find mentions for.
+            first_name: The first name to search for.
+
+        Returns:
+            List of biography snippets containing the name.
+        """
+        person_repo = PersonRepository(session)
+        child_link_repo = ChildLinkRepository(session)
+        spouse_link_repo = SpouseLinkRepository(session)
+
+        snippets: list[str] = []
+        checked_ids: set[UUID] = {person_id}  # Don't check person's own biography
+
+        async def check_person_biography(rel_id: UUID) -> None:
+            """Check a relative's biography for mentions of first_name."""
+            if rel_id in checked_ids:
+                return
+            checked_ids.add(rel_id)
+
+            person = await person_repo.get_by_id(rel_id)
+            if person and person.biography:
+                mentions = extract_name_mentions(first_name, person.biography, padding=150)
+                # Limit to first 2 mentions per relative to keep prompt reasonable
+                snippets.extend(mentions[:2])
+
+        # Check parents' biographies
+        parent_ids = await child_link_repo.get_parents(person_id)
+        for parent_id in parent_ids:
+            await check_person_biography(parent_id)
+
+        # Check children's biographies
+        child_ids = await child_link_repo.get_children(person_id)
+        for child_id in child_ids:
+            await check_person_biography(child_id)
+
+        # Check spouses' biographies
+        spouse_ids = await spouse_link_repo.get_spouses(person_id)
+        for spouse_id in spouse_ids:
+            await check_person_biography(spouse_id)
+
+        # Check siblings' biographies (other children of same parents)
+        for parent_id in parent_ids:
+            sibling_ids = await child_link_repo.get_children(parent_id)
+            for sibling_id in sibling_ids:
+                if sibling_id != person_id:
+                    await check_person_biography(sibling_id)
+
+        # Limit total snippets to avoid huge prompts
+        return snippets[:6]
 
     def _get_inverse_relationship(self, relationship: RelationshipType) -> RelationshipType:
         """Get the inverse of a relationship type.

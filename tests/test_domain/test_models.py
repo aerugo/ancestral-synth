@@ -280,6 +280,31 @@ class TestPersonSummary:
 
         assert summary.generation is None
 
+    def test_summary_with_biography_snippets(self) -> None:
+        """Should store biography snippets from related people."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="Eleanor Smith",
+            gender=Gender.FEMALE,
+            biography_snippets=[
+                "His wife Eleanor was known for her kindness",
+                "His sister Eleanor helped on the farm",
+            ],
+        )
+
+        assert len(summary.biography_snippets) == 2
+        assert "wife Eleanor" in summary.biography_snippets[0]
+
+    def test_summary_biography_snippets_default_empty(self) -> None:
+        """biography_snippets should default to empty list."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        assert summary.biography_snippets == []
+
 
 class TestEvent:
     """Tests for Event model."""

@@ -115,6 +115,9 @@ class PersonSummary(BaseModel):
     grandparents: list[str] = Field(default_factory=list)
     grandchildren: list[str] = Field(default_factory=list)
 
+    # Biography snippets from related people mentioning this person's first name
+    biography_snippets: list[str] = Field(default_factory=list)
+
 
 class Event(BaseModel):
     """A life event associated with one or more people."""
