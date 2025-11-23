@@ -1,5 +1,6 @@
 """Deduplication agent for identifying duplicate person records."""
 
+import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
@@ -9,6 +10,114 @@ from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import PersonSummary
 from ancestral_synth.utils.cost_tracker import TokenUsage
 from ancestral_synth.utils.retry import llm_retry
+
+
+@dataclass
+class ParsedName:
+    """A parsed name with components identified."""
+
+    given_name: str
+    middle_names: list[str]
+    surname: str
+    maiden_name: str | None = None
+    suffixes: list[str] | None = None  # Jr., Sr., III, etc.
+
+    @property
+    def full_name_normalized(self) -> str:
+        """Get the full name without suffixes, normalized."""
+        parts = [self.given_name] + self.middle_names + [self.surname]
+        return " ".join(parts).lower()
+
+    @property
+    def all_surnames(self) -> set[str]:
+        """Get all possible surnames (including maiden name)."""
+        surnames = {self.surname.lower()}
+        if self.maiden_name:
+            surnames.add(self.maiden_name.lower())
+        return surnames
+
+
+def parse_name(full_name: str) -> ParsedName:
+    """Parse a full name into components.
+
+    Handles patterns like:
+    - "John Smith" -> given: John, surname: Smith
+    - "John William Smith" -> given: John, middle: [William], surname: Smith
+    - "Mary Smith (née Jones)" -> given: Mary, surname: Smith, maiden: Jones
+    - "Mary Jones Smith" -> given: Mary, middle: [Jones], surname: Smith
+    - "John Smith Jr." -> given: John, surname: Smith, suffix: Jr.
+    - "Eleanor Mae Beaumont Harding" -> detects married name pattern
+
+    Args:
+        full_name: The full name to parse.
+
+    Returns:
+        ParsedName with identified components.
+    """
+    name = full_name.strip()
+    maiden_name = None
+    suffixes = []
+
+    # Extract maiden name from "née" pattern
+    nee_patterns = [
+        r"\(née\s+([^)]+)\)",
+        r"\(born\s+([^)]+)\)",
+        r"\(maiden\s+name:?\s*([^)]+)\)",
+        r"née\s+(\w+)",
+    ]
+    for pattern in nee_patterns:
+        match = re.search(pattern, name, re.IGNORECASE)
+        if match:
+            maiden_name = match.group(1).strip()
+            name = re.sub(pattern, "", name, flags=re.IGNORECASE).strip()
+            break
+
+    # Extract suffixes (Jr., Sr., III, IV, etc.)
+    suffix_pattern = r"\b(Jr\.?|Sr\.?|III|IV|II|2nd|3rd)\b"
+    suffix_matches = re.findall(suffix_pattern, name, re.IGNORECASE)
+    if suffix_matches:
+        suffixes = [s.rstrip(".") for s in suffix_matches]
+        name = re.sub(suffix_pattern, "", name, flags=re.IGNORECASE).strip()
+
+    # Clean up multiple spaces
+    name = re.sub(r"\s+", " ", name).strip()
+
+    # Split into parts
+    parts = name.split()
+
+    if len(parts) == 0:
+        return ParsedName(
+            given_name="Unknown",
+            middle_names=[],
+            surname="Unknown",
+            maiden_name=maiden_name,
+            suffixes=suffixes or None,
+        )
+    elif len(parts) == 1:
+        return ParsedName(
+            given_name=parts[0],
+            middle_names=[],
+            surname="Unknown",
+            maiden_name=maiden_name,
+            suffixes=suffixes or None,
+        )
+    elif len(parts) == 2:
+        return ParsedName(
+            given_name=parts[0],
+            middle_names=[],
+            surname=parts[1],
+            maiden_name=maiden_name,
+            suffixes=suffixes or None,
+        )
+    else:
+        # 3+ parts: first is given name, last is surname, rest are middle names
+        return ParsedName(
+            given_name=parts[0],
+            middle_names=parts[1:-1],
+            surname=parts[-1],
+            maiden_name=maiden_name,
+            suffixes=suffixes or None,
+        )
 
 
 class DedupResult(BaseModel):
@@ -39,14 +148,39 @@ DEDUP_SYSTEM_PROMPT = """You are an expert genealogist specializing in record de
 
 Your task is to determine if a newly mentioned person is the same as an existing person in the database.
 
-Guidelines for matching:
-1. Same name with matching birth year (within 2 years) = likely match
-2. Similar name (nicknames, maiden names) with matching details = possible match
-3. Family relationships should be consistent
-4. Consider historical naming patterns (Jr., Sr., III, nicknames)
-5. Gender must match for a duplicate
-6. If birth years differ by more than 5 years, probably not a match
-7. Consider that the same person might be mentioned with different levels of detail
+CRITICAL NAMING PATTERNS TO RECOGNIZE:
+
+1. MAIDEN vs MARRIED NAMES:
+   - Women often appear with their maiden name OR married name (husband's surname)
+   - "Mary Smith" and "Mary Jones" could be the same person if Mary Smith married Mr. Jones
+   - "Eleanor Mae Beaumont" could be the same as "Eleanor Mae Beaumont Harding" (added married name)
+   - Look for matching first names + approximate birth years to identify these cases
+
+2. MIDDLE NAMES:
+   - The same person may be recorded with or without middle names
+   - "Thomas Arthur Beaumont" and "Thomas Beaumont" are likely the same person
+   - Middle names might appear as initials: "Thomas A. Beaumont"
+
+3. APPROXIMATED DATES:
+   - January 1st dates (e.g., "1889-01-01") often indicate an approximate year
+   - A candidate with birth date "1889-01-01" should match someone born "1889-06-18"
+   - Within the SAME YEAR should be treated as a likely match
+
+4. NAME SUFFIXES:
+   - Jr., Sr., III, etc. distinguish different people in the same family
+   - These should NOT be ignored - they indicate different individuals
+
+5. FAMILY CONTEXT:
+   - If both people share the same parents, children, or spouse, they're likely the same person
+   - Look for relationship patterns in the key facts
+
+MATCHING GUIDELINES:
+1. Same first name + same surname + same birth year (±2 years) = LIKELY MATCH
+2. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
+3. Same first name + added/missing middle name + same surname + same birth year = LIKELY MATCH
+4. First name + maiden surname appears in full name = LIKELY MATCH (e.g., "Mary Jones" matching "Mary Jones Smith")
+5. Gender MUST match for a duplicate
+6. If birth years differ by more than 5 years, probably NOT a match
 
 Be conservative - only mark as duplicate if you're confident it's the same person.
 False merges are worse than false non-merges."""
@@ -170,6 +304,12 @@ def heuristic_match_score(
 ) -> float:
     """Calculate a heuristic match score between two people.
 
+    This function handles:
+    - Exact name matches
+    - Partial name overlap (middle names may be missing)
+    - Maiden name vs married name patterns
+    - Approximate birth years
+
     Args:
         new_name: Name of the new person.
         new_birth_year: Birth year of the new person.
@@ -179,28 +319,61 @@ def heuristic_match_score(
     Returns:
         Score from 0.0 (no match) to 1.0 (perfect match).
     """
-    score = 0.0
+    name_score = 0.0
+    year_score = 0.0
 
-    # Name comparison
-    new_parts = set(new_name.lower().split())
-    candidate_parts = set(candidate_name.lower().split())
+    # Parse both names
+    new_parsed = parse_name(new_name)
+    candidate_parsed = parse_name(candidate_name)
 
-    # Exact name match
-    if new_name.lower() == candidate_name.lower():
-        score += 0.5
-    # Partial name overlap
-    elif new_parts & candidate_parts:
-        overlap = len(new_parts & candidate_parts) / max(len(new_parts), len(candidate_parts))
-        score += 0.3 * overlap
+    # Check for suffix mismatch (Jr. vs Sr. = different people)
+    if new_parsed.suffixes and candidate_parsed.suffixes:
+        if set(new_parsed.suffixes) != set(candidate_parsed.suffixes):
+            return 0.0  # Different suffixes = different people
 
-    # Birth year comparison
+    # Given name comparison (most important)
+    new_given = new_parsed.given_name.lower()
+    candidate_given = candidate_parsed.given_name.lower()
+
+    if new_given == candidate_given:
+        name_score += 0.25  # First name match
+
+        # Surname comparison (handles maiden/married names)
+        new_surnames = new_parsed.all_surnames
+        candidate_surnames = candidate_parsed.all_surnames
+
+        # Check if any surname overlaps
+        if new_surnames & candidate_surnames:
+            name_score += 0.25  # Direct surname match
+        else:
+            # Check if new person's surname appears anywhere in candidate's name
+            # This catches "Mary Jones" matching "Mary Jones Smith"
+            candidate_all_parts = {p.lower() for p in [candidate_parsed.given_name] +
+                                  candidate_parsed.middle_names + [candidate_parsed.surname]}
+            if new_parsed.surname.lower() in candidate_all_parts:
+                name_score += 0.2  # Surname appears in candidate's full name
+            elif candidate_parsed.surname.lower() in {p.lower() for p in [new_parsed.given_name] +
+                                                       new_parsed.middle_names + [new_parsed.surname]}:
+                name_score += 0.2  # Candidate's surname appears in new person's name
+            # No surname connection - could still be a match with married name change
+
+        # Middle name comparison (bonus for matching, but not required)
+        new_middle_set = {m.lower() for m in new_parsed.middle_names}
+        candidate_middle_set = {m.lower() for m in candidate_parsed.middle_names}
+
+        if new_middle_set and candidate_middle_set:
+            if new_middle_set & candidate_middle_set:
+                name_score += 0.1  # Middle name match bonus
+
+    # Birth year comparison (independent of name matching)
     if new_birth_year and candidate_birth_year:
         year_diff = abs(new_birth_year - candidate_birth_year)
         if year_diff == 0:
-            score += 0.5
+            year_score = 0.5  # Exact year match
         elif year_diff <= 2:
-            score += 0.4
+            year_score = 0.45  # Within 2 years
         elif year_diff <= 5:
-            score += 0.2
+            year_score = 0.3  # Within 5 years
+        # Years far apart = no year bonus (year_score stays 0)
 
-    return min(score, 1.0)
+    return max(0.0, min(name_score + year_score, 1.0))
