@@ -66,4 +66,5 @@ class NoteCategory(StrEnum):
     ACHIEVEMENT = "achievement"
     ANECDOTE = "anecdote"
     HISTORICAL_CONTEXT = "historical_context"
+    CROSS_BIOGRAPHY = "cross_biography"  # Context discovered from another person's biography
     OTHER = "other"
