@@ -75,8 +75,17 @@ class BiographyAgent:
         Returns:
             A generated biography with content and word count.
         """
+        import time
+        from ancestral_synth.utils.timing import verbose_log
+
         prompt = self._build_prompt(context)
+        verbose_log(f"      [biography] Prompt length: {len(prompt)} chars")
+
+        start = time.perf_counter()
         result = await self._agent.run(prompt)
+        elapsed = time.perf_counter() - start
+        verbose_log(f"      [biography] pydantic_ai.run() completed in {elapsed:.1f}s")
+
         return result.output
 
     def _build_prompt(self, context: BiographyContext) -> str:

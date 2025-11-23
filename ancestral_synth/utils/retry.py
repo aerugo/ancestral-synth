@@ -220,30 +220,44 @@ def llm_retry(
         config = RetryConfig()
 
     def default_on_retry(attempt: int, error: Exception, delay: float) -> None:
-        error_msg = str(error)[:100]
+        error_msg = str(error)[:200]  # Increased to see more error detail
+        error_type = type(error).__name__
         logger.warning(
-            "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs...",
+            "LLM call failed (attempt %d/%d) [%s]: %s. Retrying in %.1fs...",
             attempt,
             config.max_retries + 1,
+            error_type,
             error_msg,
             delay,
         )
         # Also log to verbose output if enabled
-        verbose_log(f"⚠ Retry {attempt}/{config.max_retries + 1}: {error_msg}... waiting {delay:.1f}s")
+        verbose_log(f"⚠ Retry {attempt}/{config.max_retries + 1} [{error_type}]: {error_msg}... waiting {delay:.1f}s")
 
     retry_callback = on_retry or default_on_retry
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            import time
+
             last_exception: Exception | None = None
             _retry_state.reset()
+            total_start = time.perf_counter()
 
             for attempt in range(config.max_retries + 1):
                 _retry_state.record_attempt()
+                attempt_start = time.perf_counter()
                 try:
-                    return await func(*args, **kwargs)
+                    verbose_log(f"    [attempt {attempt + 1}/{config.max_retries + 1}] Starting API call...")
+                    result = await func(*args, **kwargs)
+                    attempt_elapsed = time.perf_counter() - attempt_start
+                    verbose_log(f"    [attempt {attempt + 1}] API call succeeded in {attempt_elapsed:.1f}s")
+                    return result
                 except Exception as e:
+                    attempt_elapsed = time.perf_counter() - attempt_start
+                    error_type = type(e).__name__
+                    verbose_log(f"    [attempt {attempt + 1}] Failed after {attempt_elapsed:.1f}s - {error_type}: {str(e)[:150]}")
+
                     # Check if this is a retryable error
                     if isinstance(e, RetryableError) or is_retryable_error(e):
                         last_exception = e
@@ -254,9 +268,12 @@ def llm_retry(
                             retry_callback(attempt + 1, e, delay)
                             await asyncio.sleep(delay)
                         else:
+                            total_elapsed = time.perf_counter() - total_start
+                            verbose_log(f"    [FAILED] All {config.max_retries + 1} attempts exhausted after {total_elapsed:.1f}s total")
                             raise
                     else:
                         # Non-retryable error, raise immediately
+                        verbose_log(f"    [FAILED] Non-retryable error, raising immediately")
                         raise
 
             if last_exception is not None:

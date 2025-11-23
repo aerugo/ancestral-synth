@@ -38,6 +38,27 @@ def configure_logging(verbose: bool = False) -> None:
     )
 
 
+KNOWN_OPENAI_MODELS = {
+    "gpt-4o", "gpt-4o-mini", "gpt-4o-2024-08-06", "gpt-4o-2024-05-13",
+    "gpt-4-turbo", "gpt-4-turbo-preview", "gpt-4", "gpt-4-32k",
+    "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
+    "o1", "o1-mini", "o1-preview",
+}
+
+
+def _validate_model_name() -> None:
+    """Warn if model name looks invalid."""
+    model = settings.llm_model
+    provider = settings.llm_provider
+
+    if provider == "openai":
+        if model not in KNOWN_OPENAI_MODELS:
+            console.print(f"[bold yellow]⚠ Warning:[/bold yellow] Model '{model}' is not a known OpenAI model.")
+            console.print(f"  Known models: {', '.join(sorted(KNOWN_OPENAI_MODELS))}")
+            console.print(f"  This may cause API errors and slow retries.")
+            console.print()
+
+
 @app.command()
 def generate(
     count: int = typer.Option(1, "--count", "-n", help="Number of persons to generate"),
@@ -53,6 +74,7 @@ def generate(
     import time
 
     configure_logging(verbose)
+    _validate_model_name()
 
     async def _generate() -> None:
         total_start = time.perf_counter()
