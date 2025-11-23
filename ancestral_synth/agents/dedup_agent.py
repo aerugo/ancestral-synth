@@ -170,20 +170,28 @@ CRITICAL NAMING PATTERNS TO RECOGNIZE:
    - Jr., Sr., III, etc. distinguish different people in the same family
    - These should NOT be ignored - they indicate different individuals
 
-5. FAMILY CONTEXT:
-   - If both people share the same parents, children, or spouse, they're likely the same person
-   - Look for relationship patterns in the key facts
+5. FAMILY CONTEXT (STRONGEST SIGNAL):
+   - If both people share ANY of the same parents, children, or spouse = VERY LIKELY MATCH
+   - Shared family members are strong evidence of being the same person
+   - Same generation number + same family context = STRONG MATCH
 
-MATCHING GUIDELINES:
-1. Same first name + same surname + same birth year (±2 years) = LIKELY MATCH
-2. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
-3. Same first name + added/missing middle name + same surname + same birth year = LIKELY MATCH
-4. First name + maiden surname appears in full name = LIKELY MATCH (e.g., "Mary Jones" matching "Mary Jones Smith")
-5. Gender MUST match for a duplicate
-6. If birth years differ by more than 5 years, probably NOT a match
+6. BIOGRAPHY MENTION CONTEXT:
+   - If the new person was mentioned in a family member's biography, they likely exist in the tree
+   - Example: "William Brown" mentioned in "Mary Brown's" biography is likely her relative
 
-Be conservative - only mark as duplicate if you're confident it's the same person.
-False merges are worse than false non-merges."""
+MATCHING GUIDELINES (in order of strength):
+1. SHARED FAMILY MEMBERS = STRONGEST SIGNAL - If parents, children, or spouse overlap, likely same person
+2. Same first name + same surname + same birth year (±2 years) = LIKELY MATCH
+3. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
+4. Same first name + added/missing middle name + same surname + same birth year = LIKELY MATCH
+5. First name + maiden surname appears in full name = LIKELY MATCH
+6. Same generation + similar name + family context = LIKELY MATCH
+7. Gender MUST match for a duplicate
+8. If birth years differ by more than 5 years WITHOUT family context match, probably NOT a match
+
+When family relationships overlap, be CONFIDENT in marking as duplicate.
+When there's no family context, be more careful about name-only matches.
+False non-merges create duplicates that clutter the genealogy - avoid them when evidence is strong."""
 
 
 class DedupAgent:
@@ -265,8 +273,16 @@ class DedupAgent:
             parts.append(f"  Death year: ~{new_person.death_year}")
         if new_person.birth_place:
             parts.append(f"  Birth place: {new_person.birth_place}")
+        if new_person.generation is not None:
+            parts.append(f"  Generation: {new_person.generation}")
+        if new_person.mentioned_by:
+            parts.append(f"  Mentioned in biography of: {new_person.mentioned_by}")
         if new_person.relationship_to_subject:
             parts.append(f"  Relationship context: {new_person.relationship_to_subject}")
+
+        # Add relation context for new person
+        self._add_relations_to_prompt(parts, new_person, indent="  ")
+
         if new_person.key_facts:
             parts.append("  Key facts:")
             for fact in new_person.key_facts:
@@ -285,15 +301,44 @@ class DedupAgent:
                 parts.append(f"    Death year: {candidate.death_year}")
             if candidate.birth_place:
                 parts.append(f"    Birth place: {candidate.birth_place}")
+            if candidate.generation is not None:
+                parts.append(f"    Generation: {candidate.generation}")
+
+            # Add relation context for candidate
+            self._add_relations_to_prompt(parts, candidate, indent="    ")
+
             if candidate.key_facts:
                 parts.append("    Key facts:")
-                for fact in candidate.key_facts[:3]:
+                for fact in candidate.key_facts:
                     parts.append(f"      - {fact}")
 
         parts.append("")
         parts.append("Is the new person a duplicate of any candidate? If so, which one?")
 
         return "\n".join(parts)
+
+    def _add_relations_to_prompt(
+        self,
+        parts: list[str],
+        person: PersonSummary,
+        indent: str = "  ",
+    ) -> None:
+        """Add family relation info to prompt parts."""
+        # First degree relations
+        if person.parents:
+            parts.append(f"{indent}Parents: {', '.join(person.parents)}")
+        if person.children:
+            parts.append(f"{indent}Children: {', '.join(person.children)}")
+        if person.spouses:
+            parts.append(f"{indent}Spouses: {', '.join(person.spouses)}")
+        if person.siblings:
+            parts.append(f"{indent}Siblings: {', '.join(person.siblings)}")
+
+        # Second degree relations
+        if person.grandparents:
+            parts.append(f"{indent}Grandparents: {', '.join(person.grandparents)}")
+        if person.grandchildren:
+            parts.append(f"{indent}Grandchildren: {', '.join(person.grandchildren)}")
 
 
 def heuristic_match_score(

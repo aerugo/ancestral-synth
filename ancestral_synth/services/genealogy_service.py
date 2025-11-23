@@ -37,6 +37,7 @@ from ancestral_synth.domain.models import (
     SpouseLink,
 )
 from ancestral_synth.persistence.database import Database
+from ancestral_synth.persistence.relations import get_relations_summary
 from ancestral_synth.persistence.repositories import (
     ChildLinkRepository,
     EventRepository,
@@ -673,6 +674,11 @@ class GenealogyService:
             # Sort by score descending
             good_candidates.sort(key=lambda x: x[1], reverse=True)
 
+            # Build enhanced context for deduplication
+            mentioned_by_name = None
+            if new_person is not None:
+                mentioned_by_name = f"{new_person.given_name} {new_person.surname}"
+
             new_summary = PersonSummary(
                 id=uuid4(),
                 full_name=reference.name,
@@ -680,11 +686,24 @@ class GenealogyService:
                 birth_year=reference.approximate_birth_year,
                 relationship_to_subject=reference.relationship,
                 key_facts=[reference.context] if reference.context else [],
+                mentioned_by=mentioned_by_name,
+                generation=generation,
             )
 
-            candidate_summaries = [
-                person_repo.to_summary(c[0]) for c in good_candidates[:5]
-            ]
+            # Build candidate summaries with relation context
+            candidate_summaries = []
+            for candidate_db, _ in good_candidates[:5]:
+                summary = person_repo.to_summary(candidate_db)
+                # Add relation context for each candidate
+                relations = await get_relations_summary(session, candidate_db.id)
+                summary.parents = relations.parents
+                summary.children = relations.children
+                summary.spouses = relations.spouses
+                summary.siblings = relations.siblings
+                summary.grandparents = relations.grandparents
+                summary.grandchildren = relations.grandchildren
+                summary.generation = candidate_db.generation
+                candidate_summaries.append(summary)
 
             # Check duplicates (rate limited)
             self._timer.log(f"Checking {len(candidate_summaries)} candidate(s) for duplicate: {reference.name}")

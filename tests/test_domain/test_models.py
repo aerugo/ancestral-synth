@@ -202,6 +202,84 @@ class TestPersonSummary:
         assert len(summary.key_facts) == 2
         assert "Born in Boston" in summary.key_facts
 
+    def test_summary_with_relation_fields(self) -> None:
+        """Should store family relation fields."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            parents=["George Smith", "Martha Smith"],
+            children=["James Smith", "Jane Smith"],
+            spouses=["Mary Jones"],
+            siblings=["Bob Smith"],
+            grandparents=["Old George Smith"],
+            grandchildren=["Baby Smith"],
+        )
+
+        assert summary.parents == ["George Smith", "Martha Smith"]
+        assert summary.children == ["James Smith", "Jane Smith"]
+        assert summary.spouses == ["Mary Jones"]
+        assert summary.siblings == ["Bob Smith"]
+        assert summary.grandparents == ["Old George Smith"]
+        assert summary.grandchildren == ["Baby Smith"]
+
+    def test_summary_relation_fields_default_empty(self) -> None:
+        """Relation fields should default to empty lists."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        assert summary.parents == []
+        assert summary.children == []
+        assert summary.spouses == []
+        assert summary.siblings == []
+        assert summary.grandparents == []
+        assert summary.grandchildren == []
+
+    def test_summary_with_mentioned_by(self) -> None:
+        """Should store who mentioned this person."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            mentioned_by="Mary Smith",
+        )
+
+        assert summary.mentioned_by == "Mary Smith"
+
+    def test_summary_mentioned_by_default_none(self) -> None:
+        """mentioned_by should default to None."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        assert summary.mentioned_by is None
+
+    def test_summary_with_generation(self) -> None:
+        """Should store generation number."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+            generation=3,
+        )
+
+        assert summary.generation == 3
+
+    def test_summary_generation_default_none(self) -> None:
+        """generation should default to None."""
+        summary = PersonSummary(
+            id=uuid4(),
+            full_name="John Smith",
+            gender=Gender.MALE,
+        )
+
+        assert summary.generation is None
+
 
 class TestEvent:
     """Tests for Event model."""
