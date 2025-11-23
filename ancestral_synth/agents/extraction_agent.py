@@ -84,6 +84,9 @@ Return the extracted data as structured JSON following the schema."""
         Returns:
             Structured genealogical data.
         """
+        import time
+        from ancestral_synth.utils.timing import verbose_log
+
         prompt_parts = ["Extract all genealogical data from this biography:"]
 
         if expected_name or expected_birth_year:
@@ -97,5 +100,11 @@ Return the extracted data as structured JSON following the schema."""
         prompt_parts.append("\nReturn the extracted data as structured JSON following the schema.")
 
         prompt = "\n".join(prompt_parts)
+        verbose_log(f"      [extraction] Prompt length: {len(prompt)} chars, biography: {len(biography)} chars")
+
+        start = time.perf_counter()
         result = await self._agent.run(prompt)
+        elapsed = time.perf_counter() - start
+        verbose_log(f"      [extraction] pydantic_ai.run() completed in {elapsed:.1f}s")
+
         return result.output
