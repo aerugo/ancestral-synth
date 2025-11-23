@@ -93,10 +93,34 @@ class PersonRepository:
         given_name: str,
         surname: str,
         birth_year: int | None = None,
+        maiden_name: str | None = None,
     ) -> list[PersonTable]:
-        """Search for potentially matching people."""
-        stmt = select(PersonTable).where(
+        """Search for potentially matching people.
+
+        Searches for people matching:
+        - Given name (case-insensitive partial match)
+        - Surname OR maiden_name matching the provided surname
+        - If maiden_name provided, also searches for that in surname/maiden_name
+        - Birth year within ±3 years if provided
+        """
+        from sqlalchemy import or_
+
+        # Build surname matching conditions:
+        # 1. Direct surname match
+        # 2. Maiden name matches provided surname
+        # 3. If searching with maiden_name, also check if it matches
+        surname_conditions = [
             PersonTable.surname == surname,
+            PersonTable.maiden_name == surname,
+        ]
+        if maiden_name:
+            surname_conditions.extend([
+                PersonTable.surname == maiden_name,
+                PersonTable.maiden_name == maiden_name,
+            ])
+
+        stmt = select(PersonTable).where(
+            or_(*surname_conditions),
             PersonTable.given_name.ilike(f"%{given_name}%"),  # type: ignore[union-attr]
         )
 

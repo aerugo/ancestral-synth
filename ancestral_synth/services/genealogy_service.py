@@ -12,7 +12,7 @@ from ancestral_synth.agents.biography_agent import (
     create_seed_context,
 )
 from ancestral_synth.agents.correction_agent import CorrectionAgent
-from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score
+from ancestral_synth.agents.dedup_agent import DedupAgent, heuristic_match_score, parse_name
 from ancestral_synth.agents.extraction_agent import ExtractionAgent
 from ancestral_synth.agents.shared_event_agent import SharedEventAgent
 from ancestral_synth.config import settings
@@ -645,18 +645,15 @@ class GenealogyService:
             logger.warning(f"Invalid person reference: {validation.errors}")
             return None
 
-        # Parse name
-        name_parts = reference.name.strip().split()
-        if len(name_parts) < 2:
-            given_name = name_parts[0] if name_parts else "Unknown"
-            surname = "Unknown"
-        else:
-            given_name = name_parts[0]
-            surname = " ".join(name_parts[1:])
+        # Parse name using the same logic as dedup agent
+        parsed = parse_name(reference.name)
+        given_name = parsed.given_name
+        surname = parsed.surname
+        maiden_name = parsed.maiden_name
 
         # Search for existing matches
         candidates = await person_repo.search_similar(
-            given_name, surname, reference.approximate_birth_year
+            given_name, surname, reference.approximate_birth_year, maiden_name
         )
 
         # Heuristic filtering
@@ -735,6 +732,7 @@ class GenealogyService:
             status=PersonStatus.PENDING,
             given_name=given_name,
             surname=surname,
+            maiden_name=maiden_name,
             gender=reference.gender,
             birth_date=birth_date,
             generation=generation,
