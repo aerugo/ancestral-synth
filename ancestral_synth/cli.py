@@ -759,6 +759,134 @@ def descendants(
 
 
 @app.command()
+def genealogy(
+    db_path: Path = typer.Option(
+        settings.database_path,
+        "--db",
+        "-d",
+        help="Path to database file",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output file path (prints to stdout if not specified)",
+    ),
+    pretty: bool = typer.Option(True, "--pretty/--compact", help="Pretty print JSON output"),
+) -> None:
+    """Output full genealogy data without long description fields.
+
+    Exports all persons, events, notes, and relationships as JSON,
+    but excludes the lengthy biography, event descriptions, and note content fields.
+    """
+    import json
+    from datetime import date as date_type, datetime
+    from typing import Any
+
+    from sqlmodel import select
+
+    from ancestral_synth.persistence.tables import (
+        ChildLinkTable,
+        EventTable,
+        NoteTable,
+        PersonTable,
+        SpouseLinkTable,
+    )
+
+    def json_serializer(obj: Any) -> Any:
+        """Custom JSON serializer for special types."""
+        if isinstance(obj, (date_type, datetime)):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+    async def _genealogy() -> None:
+        async with Database(db_path) as db:
+            async with db.session() as session:
+                # Get all persons (without biography)
+                result = await session.exec(select(PersonTable))
+                persons = []
+                for p in result.all():
+                    persons.append({
+                        "id": str(p.id),
+                        "given_name": p.given_name,
+                        "surname": p.surname,
+                        "maiden_name": p.maiden_name,
+                        "nickname": p.nickname,
+                        "gender": p.gender.value if p.gender else None,
+                        "birth_date": p.birth_date.isoformat() if p.birth_date else None,
+                        "birth_place": p.birth_place,
+                        "death_date": p.death_date.isoformat() if p.death_date else None,
+                        "death_place": p.death_place,
+                        "status": p.status.value if p.status else None,
+                        "generation": p.generation,
+                    })
+
+                # Get all events (without description)
+                result = await session.exec(select(EventTable))
+                events = []
+                for e in result.all():
+                    events.append({
+                        "id": str(e.id),
+                        "event_type": e.event_type.value if e.event_type else None,
+                        "event_date": e.event_date.isoformat() if e.event_date else None,
+                        "event_year": e.event_year,
+                        "location": e.location,
+                        "primary_person_id": str(e.primary_person_id),
+                    })
+
+                # Get all notes (without content)
+                result = await session.exec(select(NoteTable))
+                notes = []
+                for n in result.all():
+                    notes.append({
+                        "id": str(n.id),
+                        "person_id": str(n.person_id),
+                        "category": n.category.value if n.category else None,
+                        "source": n.source,
+                    })
+
+                # Get all child links
+                result = await session.exec(select(ChildLinkTable))
+                child_links = [
+                    {"parent_id": str(cl.parent_id), "child_id": str(cl.child_id)}
+                    for cl in result.all()
+                ]
+
+                # Get all spouse links
+                result = await session.exec(select(SpouseLinkTable))
+                spouse_links = [
+                    {"person1_id": str(sl.person1_id), "person2_id": str(sl.person2_id)}
+                    for sl in result.all()
+                ]
+
+            data = {
+                "metadata": {
+                    "exported_at": datetime.utcnow().isoformat(),
+                    "version": "1.0",
+                    "format": "ancestral-synth-compact",
+                    "note": "Long description fields (biography, event.description, note.content) are excluded",
+                },
+                "persons": persons,
+                "events": events,
+                "notes": notes,
+                "child_links": child_links,
+                "spouse_links": spouse_links,
+            }
+
+            indent = 2 if pretty else None
+            json_output = json.dumps(data, indent=indent, default=json_serializer)
+
+            if output:
+                with open(output, "w") as f:
+                    f.write(json_output)
+                console.print(f"[green]✓[/green] Exported to: {output}")
+            else:
+                console.print(json_output)
+
+    asyncio.run(_genealogy())
+
+
+@app.command()
 def search(
     db_path: Path = typer.Option(
         settings.database_path,
