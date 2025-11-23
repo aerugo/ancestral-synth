@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import settings
 from ancestral_synth.domain.models import ExtractedData
+from ancestral_synth.utils.openai_client import create_openai_model
 from ancestral_synth.utils.retry import llm_retry
 
 
@@ -35,13 +36,14 @@ class ExtractionAgent:
         """Initialize the extraction agent.
 
         Args:
-            model: The model to use (e.g., "openai:gpt-4o-mini").
+            model: The model to use (e.g., "gpt-4o-mini").
                    Defaults to settings.llm_model.
         """
-        model_name = model or f"{settings.llm_provider}:{settings.llm_model}"
+        # Use our custom OpenAI model with SSL disabled for proxy support
+        openai_model = create_openai_model(model)
 
         self._agent = Agent(
-            model_name,
+            openai_model,
             output_type=ExtractedData,
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
         )

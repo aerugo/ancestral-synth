@@ -5,6 +5,7 @@ from pydantic_ai import Agent
 
 from ancestral_synth.config import settings
 from ancestral_synth.domain.models import PersonSummary
+from ancestral_synth.utils.openai_client import create_openai_model
 from ancestral_synth.utils.retry import llm_retry
 
 
@@ -48,12 +49,13 @@ class DedupAgent:
         """Initialize the dedup agent.
 
         Args:
-            model: The model to use.
+            model: The model to use (e.g., "gpt-4o-mini").
         """
-        model_name = model or f"{settings.llm_provider}:{settings.llm_model}"
+        # Use our custom OpenAI model with SSL disabled for proxy support
+        openai_model = create_openai_model(model)
 
         self._agent = Agent(
-            model_name,
+            openai_model,
             output_type=DedupResult,
             system_prompt=DEDUP_SYSTEM_PROMPT,
         )
