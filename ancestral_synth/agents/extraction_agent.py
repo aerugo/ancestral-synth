@@ -2,10 +2,9 @@
 
 from pydantic_ai import Agent
 
-from ancestral_synth.config import settings
+from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import ExtractedData
 from ancestral_synth.utils.retry import llm_retry
-
 
 EXTRACTION_SYSTEM_PROMPT = """You are an expert genealogist and data extraction specialist.
 
@@ -38,7 +37,7 @@ class ExtractionAgent:
             model: The model to use (e.g., "openai:gpt-4o-mini").
                    Defaults to settings.llm_model.
         """
-        model_name = model or f"{settings.llm_provider}:{settings.llm_model}"
+        model_name = model or f"{get_pydantic_ai_provider()}:{settings.llm_model}"
 
         self._agent = Agent(
             model_name,
@@ -85,6 +84,7 @@ Return the extracted data as structured JSON following the schema."""
             Structured genealogical data.
         """
         import time
+
         from ancestral_synth.utils.timing import verbose_log
 
         prompt_parts = ["Extract all genealogical data from this biography:"]

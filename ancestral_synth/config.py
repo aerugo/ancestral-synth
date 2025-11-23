@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     )
 
     # LLM Configuration
-    llm_provider: Literal["openai", "anthropic", "ollama"] = Field(
+    llm_provider: Literal["openai", "anthropic", "ollama", "google"] = Field(
         default="openai",
         description="LLM provider to use",
     )
@@ -74,3 +74,15 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def get_pydantic_ai_provider() -> str:
+    """Get the pydantic-ai compatible provider string.
+
+    Maps user-friendly provider names to pydantic-ai expected values.
+    For example, 'google' maps to 'google-gla' for Google AI Studio.
+    """
+    provider_mapping = {
+        "google": "google-gla",  # Google AI Studio / Generative Language API
+    }
+    return provider_mapping.get(settings.llm_provider, settings.llm_provider)

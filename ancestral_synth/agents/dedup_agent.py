@@ -3,7 +3,7 @@
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from ancestral_synth.config import settings
+from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import PersonSummary
 from ancestral_synth.utils.retry import llm_retry
 
@@ -50,7 +50,7 @@ class DedupAgent:
         Args:
             model: The model to use.
         """
-        model_name = model or f"{settings.llm_provider}:{settings.llm_model}"
+        model_name = model or f"{get_pydantic_ai_provider()}:{settings.llm_model}"
 
         self._agent = Agent(
             model_name,
