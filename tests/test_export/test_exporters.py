@@ -583,3 +583,114 @@ class TestF8VisionExporter:
         assert "parentIds" not in lone
         assert "childIds" not in lone
         assert "spouseIds" not in lone
+
+    @pytest.mark.asyncio
+    async def test_default_center_selects_most_central_person(self, populated_db) -> None:
+        """Should select the most connected person as default center."""
+        import yaml
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, mother, child = populated_db
+
+        # Father has: 1 spouse + 1 child = 2 connections
+        # Mother has: 1 spouse + 1 child = 2 connections
+        # Child has: 2 parents = 2 connections
+        # All are equally central, so any could be chosen
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)  # No centered_person_id specified
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # The centered person should be one of the three (all equally central)
+        centered_id = data["meta"]["centeredPersonId"]
+        valid_ids = {str(father.id), str(mother.id), str(child.id)}
+        assert centered_id in valid_ids
+
+    @pytest.mark.asyncio
+    async def test_default_center_prefers_more_connected_person(self, test_db: Database) -> None:
+        """Should select the person with most connections as default center."""
+        import yaml
+        from ancestral_synth.domain.models import SpouseLink
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+        from ancestral_synth.persistence.repositories import SpouseLinkRepository
+
+        # Create a family where the middle-generation person has most connections
+        async with test_db.session() as session:
+            person_repo = PersonRepository(session)
+            child_link_repo = ChildLinkRepository(session)
+            spouse_link_repo = SpouseLinkRepository(session)
+
+            # Grandparent: 1 child = 1 connection
+            grandparent = Person(
+                id=uuid4(),
+                given_name="Grand",
+                surname="Parent",
+                gender=Gender.MALE,
+                status=PersonStatus.COMPLETE,
+                generation=-2,
+            )
+            # Parent: 1 parent + 1 spouse + 2 children = 4 connections (most central)
+            parent = Person(
+                id=uuid4(),
+                given_name="Middle",
+                surname="Parent",
+                gender=Gender.MALE,
+                status=PersonStatus.COMPLETE,
+                generation=-1,
+            )
+            # Spouse: 1 spouse + 2 children = 3 connections
+            spouse = Person(
+                id=uuid4(),
+                given_name="Spouse",
+                surname="Parent",
+                gender=Gender.FEMALE,
+                status=PersonStatus.COMPLETE,
+                generation=-1,
+            )
+            # Child 1: 2 parents = 2 connections
+            child1 = Person(
+                id=uuid4(),
+                given_name="Child",
+                surname="One",
+                gender=Gender.MALE,
+                status=PersonStatus.COMPLETE,
+                generation=0,
+            )
+            # Child 2: 2 parents = 2 connections
+            child2 = Person(
+                id=uuid4(),
+                given_name="Child",
+                surname="Two",
+                gender=Gender.FEMALE,
+                status=PersonStatus.COMPLETE,
+                generation=0,
+            )
+
+            await person_repo.create(grandparent)
+            await person_repo.create(parent)
+            await person_repo.create(spouse)
+            await person_repo.create(child1)
+            await person_repo.create(child2)
+
+            # Grandparent -> Parent
+            await child_link_repo.create(ChildLink(parent_id=grandparent.id, child_id=parent.id))
+            # Parent + Spouse -> Children
+            await child_link_repo.create(ChildLink(parent_id=parent.id, child_id=child1.id))
+            await child_link_repo.create(ChildLink(parent_id=parent.id, child_id=child2.id))
+            await child_link_repo.create(ChildLink(parent_id=spouse.id, child_id=child1.id))
+            await child_link_repo.create(ChildLink(parent_id=spouse.id, child_id=child2.id))
+            # Spouse link
+            await spouse_link_repo.create(SpouseLink(person1_id=parent.id, person2_id=spouse.id))
+
+        exporter = F8VisionExporter(test_db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = yaml.safe_load(output)
+
+        # Parent should be selected as most central (4 connections)
+        assert data["meta"]["centeredPersonId"] == str(parent.id)

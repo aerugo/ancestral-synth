@@ -1,5 +1,6 @@
 """F8Vision-web YAML exporter for genealogical data."""
 
+import random
 from typing import IO, Any
 from uuid import UUID
 
@@ -105,8 +106,11 @@ class F8VisionExporter:
         if centered_person_id:
             meta["centeredPersonId"] = self._format_id(centered_person_id)
         elif persons:
-            # Default to first person if not specified
-            meta["centeredPersonId"] = self._format_id(persons[0].id)
+            # Find most central person based on connection count
+            most_central = self._find_most_central_person(
+                persons, parent_to_children, child_to_parents, person_to_spouses
+            )
+            meta["centeredPersonId"] = self._format_id(most_central)
         if description:
             meta["description"] = description
 
@@ -236,3 +240,49 @@ class F8VisionExporter:
             result[link.person2_id].append(link.person1_id)
 
         return result
+
+    def _find_most_central_person(
+        self,
+        persons: list[PersonTable],
+        parent_to_children: dict[UUID, list[UUID]],
+        child_to_parents: dict[UUID, list[UUID]],
+        person_to_spouses: dict[UUID, list[UUID]],
+    ) -> UUID:
+        """Find the most central person based on number of direct connections.
+
+        Centrality is measured by degree (number of connections): parents +
+        children + spouses. If multiple persons are equally central, one is
+        chosen at random.
+
+        Args:
+            persons: List of all persons.
+            parent_to_children: Map of parent IDs to child IDs.
+            child_to_parents: Map of child IDs to parent IDs.
+            person_to_spouses: Map of person IDs to spouse IDs.
+
+        Returns:
+            UUID of the most central person.
+        """
+        if not persons:
+            raise ValueError("Cannot find central person: no persons in dataset")
+
+        # Calculate degree centrality for each person
+        person_degrees: list[tuple[UUID, int]] = []
+        for person in persons:
+            degree = (
+                len(parent_to_children.get(person.id, []))  # children
+                + len(child_to_parents.get(person.id, []))  # parents
+                + len(person_to_spouses.get(person.id, []))  # spouses
+            )
+            person_degrees.append((person.id, degree))
+
+        # Find the maximum degree
+        max_degree = max(degree for _, degree in person_degrees)
+
+        # Get all persons with the maximum degree
+        most_central_candidates = [
+            person_id for person_id, degree in person_degrees if degree == max_degree
+        ]
+
+        # Pick one at random if there are ties
+        return random.choice(most_central_candidates)
