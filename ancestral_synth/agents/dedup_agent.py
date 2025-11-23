@@ -180,6 +180,25 @@ CRITICAL NAMING PATTERNS TO RECOGNIZE:
    - Example: "William Brown" mentioned in "Mary Brown's" biography is likely her relative
    - READ THE BIOGRAPHY SNIPPETS CAREFULLY - they show how a name is actually used in context
 
+CRITICAL: CONSISTENT PARENT REFERENCES = STRONG MATCH
+
+This is VERY IMPORTANT: When multiple people reference someone as their PARENT:
+
+1. MULTIPLE CHILDREN PATTERN:
+   - If a candidate ALREADY HAS CHILDREN, and the new person is mentioned as a PARENT by someone else = STRONG MATCH
+   - Example: Candidate "Thomas Miller" has children: [David Miller]
+   - New person "Thomas Miller" mentioned by Susan Miller with relationship: parent
+   - This is almost certainly the SAME Thomas Miller (Susan and David are likely siblings)
+   - Same name + same generation + parent role + candidate already has children = MERGE
+
+2. SAME SURNAME PARENT:
+   - If new person shares surname with mentioning person and is their parent = likely real parent
+   - Parents typically share surnames with their children (before marriage)
+
+3. GENERATION ALIGNMENT:
+   - A parent should be one generation above their children
+   - If generations align correctly, this supports a match
+
 CRITICAL: DETECTING DIFFERENT PEOPLE WITH THE SAME NAME
 
 Be alert to these patterns that indicate DIFFERENT people who happen to share a first name:
@@ -205,23 +224,23 @@ Be alert to these patterns that indicate DIFFERENT people who happen to share a 
    - Example: Eleanor (sibling) and Eleanor (spouse) in generation 3 = TWO DIFFERENT PEOPLE
 
 REASONING STEPS FOR EACH CANDIDATE:
-1. Check for CONFLICTING relationships first - if found, they are DIFFERENT people
-2. Read biography snippets to understand the actual relationship context
-3. Check if family members overlap (shared parents/children/spouse)
-4. Compare names, birth years, and other attributes
-5. Only merge if NO conflicting evidence exists
+1. Check if new person is mentioned as PARENT and candidate already has children = STRONG MATCH signal
+2. Check for CONFLICTING relationships - if found, they are DIFFERENT people
+3. Read biography snippets to understand the actual relationship context
+4. Check if family members overlap (shared parents/children/spouse)
+5. Compare names, birth years, and other attributes
 
 MATCHING GUIDELINES (in order of strength):
 1. CONFLICTING RELATIONSHIPS = DEFINITE NON-MATCH - If relationships conflict, different people
-2. SHARED FAMILY MEMBERS with matching relationships = LIKELY MATCH
-3. Same first name + same surname + same birth year (±2 years) = POSSIBLE MATCH (verify context)
-4. Same first name + different surnames + same birth year = POSSIBLE married name change (for women)
-5. Gender MUST match for a duplicate
-6. If birth years differ by more than 5 years, probably NOT a match
+2. CONSISTENT PARENT REFERENCES = STRONG MATCH - Multiple children referencing same parent name
+3. SHARED FAMILY MEMBERS with matching relationships = LIKELY MATCH
+4. Same first name + same surname + same generation + same role = LIKELY MATCH
+5. Same first name + same surname + same birth year (±2 years) = POSSIBLE MATCH (verify context)
+6. Gender MUST match for a duplicate
+7. If birth years differ by more than 5 years, probably NOT a match
 
-BE CONSERVATIVE: False merges are WORSE than false non-merges.
-Merging two different people corrupts the genealogy permanently.
-When in doubt, mark as NOT a duplicate."""
+BALANCE: Be conservative about CONFLICTING evidence, but confident about CONSISTENT evidence.
+Multiple family members referencing the same person by name and role is strong evidence of a match."""
 
 
 class DedupAgent:

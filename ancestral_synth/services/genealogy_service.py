@@ -736,24 +736,35 @@ class GenealogyService:
                     )
 
             if dedup_result.is_duplicate and dedup_result.matched_person_id:
-                matched_id = UUID(dedup_result.matched_person_id)
-                logger.info(
-                    f"Matched '{reference.name}' to existing person "
-                    f"(confidence: {dedup_result.confidence:.2f})"
-                )
+                # Validate UUID format (LLM sometimes returns truncated UUIDs)
+                try:
+                    matched_id = UUID(dedup_result.matched_person_id)
+                except ValueError:
+                    logger.warning(
+                        f"LLM returned invalid UUID '{dedup_result.matched_person_id}' "
+                        f"for '{reference.name}' - treating as no match"
+                    )
+                    # Fall through to create new pending record
+                    matched_id = None
 
-                # Evaluate shared events if the new person has a biography
-                if new_person is not None and new_person.biography is not None:
-                    # Get the inverse relationship (existing person's relationship to new person)
-                    inverse_relationship = self._get_inverse_relationship(reference.relationship)
-                    await self._evaluate_shared_events(
-                        session,
-                        existing_person_id=matched_id,
-                        new_person=new_person,
-                        relationship=inverse_relationship,
+                if matched_id is not None:
+                    logger.info(
+                        f"Matched '{reference.name}' to existing person "
+                        f"(confidence: {dedup_result.confidence:.2f})"
                     )
 
-                return matched_id
+                    # Evaluate shared events if the new person has a biography
+                    if new_person is not None and new_person.biography is not None:
+                        # Get the inverse relationship (existing person's relationship to new person)
+                        inverse_relationship = self._get_inverse_relationship(reference.relationship)
+                        await self._evaluate_shared_events(
+                            session,
+                            existing_person_id=matched_id,
+                            new_person=new_person,
+                            relationship=inverse_relationship,
+                        )
+
+                    return matched_id
 
         # No match found - create pending record
         birth_date = None
