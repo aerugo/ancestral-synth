@@ -267,6 +267,23 @@ def generate(
                 if count > 0:
                     console.print(f"  Average per person: [cyan]{total_duration / count:.1f}s[/cyan]")
 
+                # Display cost summary
+                from ancestral_synth.utils.cost_tracker import format_cost, format_tokens
+
+                cost_summary = service.cost_tracker.get_summary()
+                console.print()
+                console.print("[bold]Cost Summary:[/bold]")
+                console.print(f"  Provider: {cost_summary['provider']}:{cost_summary['model']}")
+                console.print(f"  Total LLM calls: {cost_summary['total_llm_calls']}")
+                console.print(
+                    f"  Total tokens: {format_tokens(cost_summary['total_input_tokens'])} input, "
+                    f"{format_tokens(cost_summary['total_output_tokens'])} output"
+                )
+                console.print(f"  [bold green]Total cost: {format_cost(cost_summary['total_cost'])}[/bold green]")
+                if count > 0:
+                    avg_cost = cost_summary['total_cost'] / count
+                    console.print(f"  Average per person: {format_cost(avg_cost)}")
+
     asyncio.run(_generate())
 
 

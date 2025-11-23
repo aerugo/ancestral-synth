@@ -297,6 +297,19 @@ class TestGenerateCommand:
                     "queued": 0,
                     "queue_size": 0,
                 }
+                # Add mock for cost_tracker (non-async MagicMock)
+                from unittest.mock import MagicMock
+                mock_cost_tracker = MagicMock()
+                mock_cost_tracker.get_summary.return_value = {
+                    "total_cost": 0.005,
+                    "total_persons": 1,
+                    "total_llm_calls": 2,
+                    "total_input_tokens": 1000,
+                    "total_output_tokens": 500,
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                }
+                mock_service.cost_tracker = mock_cost_tracker
                 MockService.return_value = mock_service
 
                 result = runner.invoke(app, [

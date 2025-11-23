@@ -223,11 +223,13 @@ class TestDedupAgentEmptyCandidates:
             gender=Gender.MALE,
         )
 
-        result = await agent.check_duplicate(new_person, [])
+        result_with_usage = await agent.check_duplicate(new_person, [])
 
-        assert result.is_duplicate is False
-        assert result.matched_person_id is None
-        assert result.confidence == 1.0
+        # Result is now wrapped in DedupResultWithUsage
+        assert result_with_usage.result.is_duplicate is False
+        assert result_with_usage.result.matched_person_id is None
+        assert result_with_usage.result.confidence == 1.0
+        assert result_with_usage.usage.total_tokens == 0  # No LLM call for empty candidates
 
 
 class TestDedupAgentPromptBuilding:

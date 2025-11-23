@@ -1,10 +1,21 @@
 """Correction agent for fixing validation errors in extracted data."""
 
+from dataclasses import dataclass
+
 from pydantic_ai import Agent
 
 from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import ExtractedData
+from ancestral_synth.utils.cost_tracker import TokenUsage
 from ancestral_synth.utils.retry import llm_retry
+
+
+@dataclass
+class CorrectionResult:
+    """Result of data correction including token usage."""
+
+    data: ExtractedData
+    usage: TokenUsage
 
 CORRECTION_SYSTEM_PROMPT = """You are an expert genealogist specializing in data validation and correction.
 
@@ -51,7 +62,7 @@ class CorrectionAgent:
         biography: str,
         extracted_data: ExtractedData,
         validation_errors: list[str],
-    ) -> ExtractedData:
+    ) -> CorrectionResult:
         """Correct validation errors in extracted data.
 
         Args:
@@ -60,7 +71,7 @@ class CorrectionAgent:
             validation_errors: List of validation error messages.
 
         Returns:
-            Corrected genealogical data.
+            CorrectionResult with corrected data and token usage.
         """
         import time
 
@@ -93,7 +104,14 @@ The corrected data must be internally consistent (all events within birth-death 
         elapsed = time.perf_counter() - start
         verbose_log(f"      [correction] pydantic_ai.run() completed in {elapsed:.1f}s")
 
-        return result.output
+        # Extract token usage from result
+        usage_data = result.usage()
+        usage = TokenUsage(
+            input_tokens=usage_data.request_tokens or 0,
+            output_tokens=usage_data.response_tokens or 0,
+        )
+
+        return CorrectionResult(data=result.output, usage=usage)
 
     def _format_extracted_data(self, data: ExtractedData) -> str:
         """Format extracted data as readable text for the prompt."""

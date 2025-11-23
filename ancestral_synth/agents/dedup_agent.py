@@ -1,10 +1,13 @@
 """Deduplication agent for identifying duplicate person records."""
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from ancestral_synth.config import get_pydantic_ai_provider, settings
 from ancestral_synth.domain.models import PersonSummary
+from ancestral_synth.utils.cost_tracker import TokenUsage
 from ancestral_synth.utils.retry import llm_retry
 
 
@@ -22,6 +25,14 @@ class DedupResult(BaseModel):
         description="Confidence score (0-1) in the deduplication decision",
     )
     reasoning: str = Field(description="Explanation of the deduplication decision")
+
+
+@dataclass
+class DedupResultWithUsage:
+    """Result of deduplication check including token usage."""
+
+    result: DedupResult
+    usage: TokenUsage
 
 
 DEDUP_SYSTEM_PROMPT = """You are an expert genealogist specializing in record deduplication.
@@ -62,7 +73,7 @@ class DedupAgent:
         self,
         new_person: PersonSummary,
         candidates: list[PersonSummary],
-    ) -> DedupResult:
+    ) -> DedupResultWithUsage:
         """Check if a new person matches any existing candidates.
 
         Args:
@@ -70,24 +81,35 @@ class DedupAgent:
             candidates: Existing people who might be duplicates.
 
         Returns:
-            Result indicating if a duplicate was found.
+            DedupResultWithUsage with result and token usage.
         """
         if not candidates:
-            return DedupResult(
-                is_duplicate=False,
-                matched_person_id=None,
-                confidence=1.0,
-                reasoning="No candidates to compare against",
+            return DedupResultWithUsage(
+                result=DedupResult(
+                    is_duplicate=False,
+                    matched_person_id=None,
+                    confidence=1.0,
+                    reasoning="No candidates to compare against",
+                ),
+                usage=TokenUsage(input_tokens=0, output_tokens=0),
             )
 
         prompt = self._build_prompt(new_person, candidates)
         return await self._run_llm(prompt)
 
     @llm_retry()
-    async def _run_llm(self, prompt: str) -> DedupResult:
+    async def _run_llm(self, prompt: str) -> DedupResultWithUsage:
         """Run LLM with retry logic."""
         result = await self._agent.run(prompt)
-        return result.output
+
+        # Extract token usage from result
+        usage_data = result.usage()
+        usage = TokenUsage(
+            input_tokens=usage_data.request_tokens or 0,
+            output_tokens=usage_data.response_tokens or 0,
+        )
+
+        return DedupResultWithUsage(result=result.output, usage=usage)
 
     def _build_prompt(
         self,

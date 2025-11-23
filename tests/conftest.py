@@ -308,11 +308,17 @@ class MockBiographyAgent:
         self.call_count = 0
         self.last_context: Any = None
 
-    async def generate(self, context: Any) -> Biography:
+    async def generate(self, context: Any) -> Any:
         """Generate a mock biography."""
+        from ancestral_synth.agents.biography_agent import BiographyResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
         self.call_count += 1
         self.last_context = context
-        return self.biography
+        return BiographyResult(
+            biography=self.biography,
+            usage=TokenUsage(input_tokens=100, output_tokens=500),
+        )
 
 
 class MockExtractionAgent:
@@ -327,22 +333,34 @@ class MockExtractionAgent:
         self.call_count = 0
         self.last_biography: str | None = None
 
-    async def extract(self, biography: str) -> ExtractedData:
+    async def extract(self, biography: str) -> Any:
         """Extract mock data from biography."""
+        from ancestral_synth.agents.extraction_agent import ExtractionResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
         self.call_count += 1
         self.last_biography = biography
-        return self.extracted_data
+        return ExtractionResult(
+            data=self.extracted_data,
+            usage=TokenUsage(input_tokens=200, output_tokens=300),
+        )
 
     async def extract_with_hints(
         self,
         biography: str,
         expected_name: str | None = None,
         expected_birth_year: int | None = None,
-    ) -> ExtractedData:
+    ) -> Any:
         """Extract mock data with hints."""
+        from ancestral_synth.agents.extraction_agent import ExtractionResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
         self.call_count += 1
         self.last_biography = biography
-        return self.extracted_data
+        return ExtractionResult(
+            data=self.extracted_data,
+            usage=TokenUsage(input_tokens=200, output_tokens=300),
+        )
 
 
 class MockDedupAgent:
@@ -359,14 +377,18 @@ class MockDedupAgent:
         candidates: list[PersonSummary],
     ) -> Any:
         """Check for mock duplicates."""
-        from ancestral_synth.agents.dedup_agent import DedupResult
+        from ancestral_synth.agents.dedup_agent import DedupResult, DedupResultWithUsage
+        from ancestral_synth.utils.cost_tracker import TokenUsage
 
         self.call_count += 1
-        return DedupResult(
-            is_duplicate=self.is_duplicate,
-            matched_person_id=self.matched_id,
-            confidence=0.95 if self.is_duplicate else 0.1,
-            reasoning="Mock dedup result",
+        return DedupResultWithUsage(
+            result=DedupResult(
+                is_duplicate=self.is_duplicate,
+                matched_person_id=self.matched_id,
+                confidence=0.95 if self.is_duplicate else 0.1,
+                reasoning="Mock dedup result",
+            ),
+            usage=TokenUsage(input_tokens=150, output_tokens=50),
         )
 
 
