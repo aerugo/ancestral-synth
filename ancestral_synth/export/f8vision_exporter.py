@@ -1,29 +1,37 @@
-"""F8Vision-web YAML exporter for genealogical data."""
+"""F8Vision-web exporter for genealogical data (Ancestral-Synth JSON format)."""
 
+import json
 import random
+from datetime import datetime
 from typing import IO, Any
 from uuid import UUID
 
-import yaml
 from sqlmodel import select
 
 from ancestral_synth.persistence.database import Database
 from ancestral_synth.persistence.tables import (
     ChildLinkTable,
+    EventTable,
+    NoteTable,
     PersonTable,
     SpouseLinkTable,
 )
 
 
 class F8VisionExporter:
-    """Export genealogical data to f8vision-web YAML format.
+    """Export genealogical data to f8vision-web format.
 
-    The f8vision-web format is a YAML file containing:
-    - meta: Metadata about the family tree (title, centeredPersonId, description)
-    - people: Array of person records with relationships
+    Supports the Ancestral-Synth JSON format with:
+    - Rich person records (all fields)
+    - Events array with firefly visualization data
+    - Notes array with categories and sources
+    - Separate relationship links (child_links, spouse_links)
 
     See: https://github.com/f8vision/f8vision-web for format specification.
     """
+
+    FORMAT_VERSION = "1.0"
+    FORMAT_NAME = "ancestral-synth-json"
 
     def __init__(self, db: Database) -> None:
         """Initialize the exporter.
@@ -41,26 +49,21 @@ class F8VisionExporter:
         description: str | None = None,
         truncate_descriptions: int | None = None,
     ) -> None:
-        """Export all data to f8vision-web YAML format.
+        """Export all data to f8vision-web JSON format.
 
         Args:
-            output: Output stream to write YAML to.
+            output: Output stream to write JSON to.
             title: Optional title for the family tree.
             centered_person_id: Optional ID of person to center visualization on.
             description: Optional description of the family tree.
             truncate_descriptions: If set, truncate biography fields to this many characters.
         """
-        data = await self._gather_data(title, centered_person_id, description, truncate_descriptions)
-
-        # Use safe_dump with allow_unicode for proper character handling
-        yaml.safe_dump(
-            data,
-            output,
-            default_flow_style=False,
-            allow_unicode=True,
-            sort_keys=False,
-            width=120,
+        data = await self._gather_data(
+            title, centered_person_id, description, truncate_descriptions
         )
+
+        # Write JSON with proper formatting
+        json.dump(data, output, indent=2, ensure_ascii=False)
 
     async def _gather_data(
         self,
@@ -69,7 +72,7 @@ class F8VisionExporter:
         description: str | None,
         truncate_descriptions: int | None = None,
     ) -> dict[str, Any]:
-        """Gather all data for export in f8vision-web format."""
+        """Gather all data for export in ancestral-synth JSON format."""
         async with self._db.session() as session:
             # Get all persons
             result = await session.exec(select(PersonTable))
@@ -83,63 +86,87 @@ class F8VisionExporter:
             result = await session.exec(select(SpouseLinkTable))
             spouse_links = list(result.all())
 
-        # Build relationship maps
+            # Get all events
+            result = await session.exec(select(EventTable))
+            events = list(result.all())
+
+            # Get all notes
+            result = await session.exec(select(NoteTable))
+            notes = list(result.all())
+
+        # Build relationship maps for finding central person
         parent_to_children = self._build_parent_to_children_map(child_links)
         child_to_parents = self._build_child_to_parents_map(child_links)
         person_to_spouses = self._build_spouse_map(spouse_links)
 
-        # Convert persons to f8vision format
-        people = [
-            self._person_to_f8vision(
-                person,
-                parent_to_children.get(person.id, []),
-                child_to_parents.get(person.id, []),
-                person_to_spouses.get(person.id, []),
-                truncate_descriptions,
-            )
-            for person in persons
-        ]
-
         # Build result
         result_data: dict[str, Any] = {}
 
-        # Add meta section
-        meta: dict[str, Any] = {}
+        # Add metadata section
+        metadata: dict[str, Any] = {
+            "format": self.FORMAT_NAME,
+            "version": self.FORMAT_VERSION,
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+        }
+
         if title:
-            meta["title"] = title
+            metadata["title"] = title
+        if description:
+            metadata["description"] = description
+        if truncate_descriptions:
+            metadata["truncated"] = truncate_descriptions
+
         if centered_person_id:
-            meta["centeredPersonId"] = self._format_id(centered_person_id)
+            metadata["centeredPersonId"] = self._format_id(centered_person_id)
         elif persons:
             # Find most central person based on connection count
             most_central = self._find_most_central_person(
                 persons, parent_to_children, child_to_parents, person_to_spouses
             )
-            meta["centeredPersonId"] = self._format_id(most_central)
-        if description:
-            meta["description"] = description
+            metadata["centeredPersonId"] = self._format_id(most_central)
 
-        if meta:
-            result_data["meta"] = meta
+        result_data["metadata"] = metadata
 
-        result_data["people"] = people
+        # Convert persons to f8vision format (with all fields)
+        result_data["persons"] = [
+            self._person_to_f8vision(person, truncate_descriptions)
+            for person in persons
+        ]
+
+        # Add events array
+        result_data["events"] = [self._event_to_f8vision(event) for event in events]
+
+        # Add notes array
+        result_data["notes"] = [self._note_to_f8vision(note) for note in notes]
+
+        # Add relationship links as separate arrays
+        result_data["child_links"] = [
+            {
+                "parent_id": self._format_id(link.parent_id),
+                "child_id": self._format_id(link.child_id),
+            }
+            for link in child_links
+        ]
+
+        result_data["spouse_links"] = [
+            {
+                "person1_id": self._format_id(link.person1_id),
+                "person2_id": self._format_id(link.person2_id),
+            }
+            for link in spouse_links
+        ]
 
         return result_data
 
     def _person_to_f8vision(
         self,
         person: PersonTable,
-        child_ids: list[UUID],
-        parent_ids: list[UUID],
-        spouse_ids: list[UUID],
         truncate_descriptions: int | None = None,
     ) -> dict[str, Any]:
-        """Convert a person to f8vision-web format.
+        """Convert a person to f8vision-web format with all fields.
 
         Args:
             person: The person database record.
-            child_ids: List of this person's children's IDs.
-            parent_ids: List of this person's parents' IDs.
-            spouse_ids: List of this person's spouses' IDs.
             truncate_descriptions: If set, truncate biography to this many characters.
 
         Returns:
@@ -147,39 +174,114 @@ class F8VisionExporter:
         """
         result: dict[str, Any] = {
             "id": self._format_id(person.id),
-            "name": f"{person.given_name} {person.surname}".strip(),
         }
 
-        # Add optional date fields
+        # Identity fields
+        if person.given_name:
+            result["given_name"] = person.given_name
+        if person.surname:
+            result["surname"] = person.surname
+
+        # Also include full name for compatibility
+        full_name = f"{person.given_name or ''} {person.surname or ''}".strip()
+        if full_name:
+            result["name"] = full_name
+
+        if person.nickname:
+            result["nickname"] = person.nickname
+        if person.maiden_name:
+            result["maiden_name"] = person.maiden_name
+
+        # Demographics
+        if person.gender:
+            # Convert enum to string value
+            gender_value = person.gender.value if hasattr(person.gender, 'value') else person.gender
+            result["gender"] = str(gender_value)
+
+        # Birth info
         if person.birth_date:
-            result["birthDate"] = person.birth_date.isoformat()
+            result["birth_date"] = person.birth_date.isoformat()
+        if person.birth_place:
+            result["birth_place"] = person.birth_place
 
+        # Death info
         if person.death_date:
-            result["deathDate"] = person.death_date.isoformat()
+            result["death_date"] = person.death_date.isoformat()
+        if person.death_place:
+            result["death_place"] = person.death_place
 
-        # Add biography if present
+        # Biography
         if person.biography:
             biography = person.biography
             if truncate_descriptions and len(biography) > truncate_descriptions:
                 biography = biography[:truncate_descriptions] + "..."
             result["biography"] = biography
 
-        # Add relationship arrays (only if non-empty)
-        if parent_ids:
-            result["parentIds"] = [self._format_id(pid) for pid in parent_ids]
+        # Status
+        if person.status:
+            status_value = person.status.value if hasattr(person.status, 'value') else person.status
+            result["status"] = str(status_value)
 
-        if spouse_ids:
-            result["spouseIds"] = [self._format_id(sid) for sid in spouse_ids]
+        # Generation
+        if person.generation is not None:
+            result["generation"] = person.generation
 
-        if child_ids:
-            result["childIds"] = [self._format_id(cid) for cid in child_ids]
+        return result
+
+    def _event_to_f8vision(self, event: EventTable) -> dict[str, Any]:
+        """Convert an event to f8vision-web format.
+
+        Args:
+            event: The event database record.
+
+        Returns:
+            Dictionary in f8vision-web event format.
+        """
+        event_type_val = (
+            event.event_type.value if hasattr(event.event_type, 'value') else event.event_type
+        )
+        result: dict[str, Any] = {
+            "id": self._format_id(event.id),
+            "event_type": str(event_type_val),
+            "primary_person_id": self._format_id(event.primary_person_id),
+        }
+
+        if event.event_date:
+            result["event_date"] = event.event_date.isoformat()
+        if event.event_year is not None:
+            result["event_year"] = event.event_year
+        if event.location:
+            result["location"] = event.location
+        if event.description:
+            result["description"] = event.description
+
+        return result
+
+    def _note_to_f8vision(self, note: NoteTable) -> dict[str, Any]:
+        """Convert a note to f8vision-web format.
+
+        Args:
+            note: The note database record.
+
+        Returns:
+            Dictionary in f8vision-web note format.
+        """
+        result: dict[str, Any] = {
+            "id": self._format_id(note.id),
+            "person_id": self._format_id(note.person_id),
+            "content": note.content,
+        }
+
+        if note.category:
+            category_val = note.category.value if hasattr(note.category, 'value') else note.category
+            result["category"] = str(category_val)
+        if note.source:
+            result["source"] = note.source
 
         return result
 
     def _format_id(self, uuid: UUID) -> str:
         """Format a UUID as a string ID for f8vision-web.
-
-        Uses a shorter format for readability while maintaining uniqueness.
 
         Args:
             uuid: The UUID to format.
@@ -187,7 +289,6 @@ class F8VisionExporter:
         Returns:
             String representation of the ID.
         """
-        # Use full UUID string for guaranteed uniqueness
         return str(uuid)
 
     def _build_parent_to_children_map(
