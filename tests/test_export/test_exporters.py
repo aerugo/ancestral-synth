@@ -365,18 +365,24 @@ class TestGEDCOMExporter:
 
 
 class TestF8VisionExporter:
-    """Tests for F8Vision-web YAML export functionality."""
+    """Tests for F8Vision-web JSON export functionality (ancestral-synth format)."""
 
     @pytest.fixture
     async def populated_db(self, test_db: Database):
         """Create a database with test data including spouse relationships."""
         from ancestral_synth.domain.models import SpouseLink
-        from ancestral_synth.persistence.repositories import SpouseLinkRepository
+        from ancestral_synth.persistence.repositories import (
+            EventRepository,
+            NoteRepository,
+            SpouseLinkRepository,
+        )
 
         async with test_db.session() as session:
             person_repo = PersonRepository(session)
             child_link_repo = ChildLinkRepository(session)
             spouse_link_repo = SpouseLinkRepository(session)
+            event_repo = EventRepository(session)
+            note_repo = NoteRepository(session)
 
             father = Person(
                 id=uuid4(),
@@ -418,12 +424,32 @@ class TestF8VisionExporter:
             await child_link_repo.create(ChildLink(parent_id=mother.id, child_id=child.id))
             await spouse_link_repo.create(SpouseLink(person1_id=father.id, person2_id=mother.id))
 
+            # Add an event for father
+            birth_event = Event(
+                id=uuid4(),
+                event_type=EventType.BIRTH,
+                event_date=date(1920, 5, 15),
+                location="Boston, MA",
+                description="Born at Massachusetts General Hospital",
+                primary_person_id=father.id,
+            )
+            await event_repo.create(birth_event)
+
+            # Add a note for father
+            note = Note(
+                id=uuid4(),
+                person_id=father.id,
+                category=NoteCategory.CAREER,
+                content="Worked as a master carpenter",
+                source="biography",
+            )
+            await note_repo.create(note)
+
         return test_db, father, mother, child
 
     @pytest.mark.asyncio
-    async def test_export_to_yaml(self, populated_db) -> None:
-        """Should export entire dataset to YAML."""
-        import yaml
+    async def test_export_to_json(self, populated_db) -> None:
+        """Should export entire dataset to JSON with ancestral-synth format."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, _, _, _ = populated_db
@@ -433,15 +459,18 @@ class TestF8VisionExporter:
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
-        assert "people" in data
-        assert len(data["people"]) == 3
+        assert "persons" in data
+        assert len(data["persons"]) == 3
+        assert "events" in data
+        assert "notes" in data
+        assert "child_links" in data
+        assert "spouse_links" in data
 
     @pytest.mark.asyncio
-    async def test_yaml_includes_meta(self, populated_db) -> None:
-        """Should include meta section when provided."""
-        import yaml
+    async def test_json_includes_metadata(self, populated_db) -> None:
+        """Should include metadata section when provided."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, father, _, _ = populated_db
@@ -456,17 +485,19 @@ class TestF8VisionExporter:
         )
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
-        assert "meta" in data
-        assert data["meta"]["title"] == "Smith Family"
-        assert data["meta"]["centeredPersonId"] == str(father.id)
-        assert data["meta"]["description"] == "Three generations of Smiths"
+        assert "metadata" in data
+        assert data["metadata"]["title"] == "Smith Family"
+        assert data["metadata"]["centeredPersonId"] == str(father.id)
+        assert data["metadata"]["description"] == "Three generations of Smiths"
+        assert data["metadata"]["format"] == "ancestral-synth-json"
+        assert data["metadata"]["version"] == "1.0"
+        assert "exported_at" in data["metadata"]
 
     @pytest.mark.asyncio
-    async def test_yaml_person_format(self, populated_db) -> None:
-        """Should format persons according to f8vision-web spec."""
-        import yaml
+    async def test_json_person_format(self, populated_db) -> None:
+        """Should format persons according to f8vision-web ancestral-synth spec."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, father, _, _ = populated_db
@@ -476,21 +507,26 @@ class TestF8VisionExporter:
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
         # Find John by name
-        john = next(p for p in data["people"] if "John" in p["name"])
+        john = next(p for p in data["persons"] if "John" in p.get("name", ""))
 
         assert john["id"] == str(father.id)
         assert john["name"] == "John Smith"
-        assert john["birthDate"] == "1920-05-15"
-        assert john["deathDate"] == "1990-03-20"
+        assert john["given_name"] == "John"
+        assert john["surname"] == "Smith"
+        assert john["birth_date"] == "1920-05-15"
+        assert john["death_date"] == "1990-03-20"
+        assert john["birth_place"] == "Boston, MA"
+        assert john["gender"] == "male"
+        assert john["status"] == "complete"
+        assert john["generation"] == -1
         assert "biography" in john
 
     @pytest.mark.asyncio
-    async def test_yaml_includes_parent_ids(self, populated_db) -> None:
-        """Should include parentIds for children."""
-        import yaml
+    async def test_json_includes_child_links(self, populated_db) -> None:
+        """Should include child_links array."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, father, mother, child = populated_db
@@ -500,40 +536,18 @@ class TestF8VisionExporter:
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
-        # Find James (the child)
-        james = next(p for p in data["people"] if "James" in p["name"])
-
-        assert "parentIds" in james
-        assert str(father.id) in james["parentIds"]
-        assert str(mother.id) in james["parentIds"]
-
-    @pytest.mark.asyncio
-    async def test_yaml_includes_child_ids(self, populated_db) -> None:
-        """Should include childIds for parents."""
-        import yaml
-        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
-
-        db, father, _, child = populated_db
-
-        exporter = F8VisionExporter(db)
-        output = StringIO()
-        await exporter.export(output)
-
-        output.seek(0)
-        data = yaml.safe_load(output)
-
-        # Find John (the father)
-        john = next(p for p in data["people"] if "John" in p["name"])
-
-        assert "childIds" in john
-        assert str(child.id) in john["childIds"]
+        assert len(data["child_links"]) == 2  # father->child and mother->child
+        parent_ids = {link["parent_id"] for link in data["child_links"]}
+        assert str(father.id) in parent_ids
+        assert str(mother.id) in parent_ids
+        for link in data["child_links"]:
+            assert link["child_id"] == str(child.id)
 
     @pytest.mark.asyncio
-    async def test_yaml_includes_spouse_ids(self, populated_db) -> None:
-        """Should include spouseIds for married persons."""
-        import yaml
+    async def test_json_includes_spouse_links(self, populated_db) -> None:
+        """Should include spouse_links array."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, father, mother, _ = populated_db
@@ -543,51 +557,73 @@ class TestF8VisionExporter:
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
-        # Find John and Mary
-        john = next(p for p in data["people"] if "John" in p["name"])
-        mary = next(p for p in data["people"] if "Mary" in p["name"])
-
-        assert "spouseIds" in john
-        assert str(mother.id) in john["spouseIds"]
-        assert "spouseIds" in mary
-        assert str(father.id) in mary["spouseIds"]
+        assert len(data["spouse_links"]) == 1
+        link = data["spouse_links"][0]
+        assert {link["person1_id"], link["person2_id"]} == {str(father.id), str(mother.id)}
 
     @pytest.mark.asyncio
-    async def test_yaml_omits_empty_relationship_arrays(self, test_db: Database) -> None:
-        """Should not include empty relationship arrays."""
-        import yaml
+    async def test_json_includes_events(self, populated_db) -> None:
+        """Should include events array."""
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
-        # Create a lone person with no relationships
-        async with test_db.session() as session:
-            person_repo = PersonRepository(session)
-            lone_person = Person(
-                id=uuid4(),
-                given_name="Lone",
-                surname="Person",
-                gender=Gender.MALE,
-                status=PersonStatus.COMPLETE,
-            )
-            await person_repo.create(lone_person)
+        db, father, _, _ = populated_db
 
-        exporter = F8VisionExporter(test_db)
+        exporter = F8VisionExporter(db)
         output = StringIO()
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
-        lone = data["people"][0]
-        assert "parentIds" not in lone
-        assert "childIds" not in lone
-        assert "spouseIds" not in lone
+        assert len(data["events"]) >= 1
+        birth_event = next(e for e in data["events"] if e["event_type"] == "birth")
+        assert birth_event["primary_person_id"] == str(father.id)
+        assert birth_event["event_date"] == "1920-05-15"
+        assert birth_event["location"] == "Boston, MA"
+
+    @pytest.mark.asyncio
+    async def test_json_includes_notes(self, populated_db) -> None:
+        """Should include notes array."""
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, _, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = json.load(output)
+
+        assert len(data["notes"]) >= 1
+        career_note = next(n for n in data["notes"] if n["category"] == "career")
+        assert career_note["person_id"] == str(father.id)
+        assert career_note["content"] == "Worked as a master carpenter"
+        assert career_note["source"] == "biography"
+
+    @pytest.mark.asyncio
+    async def test_json_includes_maiden_name(self, populated_db) -> None:
+        """Should include maiden_name when present."""
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, _, mother, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output)
+
+        output.seek(0)
+        data = json.load(output)
+
+        # Find Mary
+        mary = next(p for p in data["persons"] if p.get("given_name") == "Mary")
+        assert mary["maiden_name"] == "Johnson"
 
     @pytest.mark.asyncio
     async def test_default_center_selects_most_central_person(self, populated_db) -> None:
         """Should select the most connected person as default center."""
-        import yaml
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
 
         db, father, mother, child = populated_db
@@ -602,17 +638,16 @@ class TestF8VisionExporter:
         await exporter.export(output)  # No centered_person_id specified
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
         # The centered person should be one of the three (all equally central)
-        centered_id = data["meta"]["centeredPersonId"]
+        centered_id = data["metadata"]["centeredPersonId"]
         valid_ids = {str(father.id), str(mother.id), str(child.id)}
         assert centered_id in valid_ids
 
     @pytest.mark.asyncio
     async def test_default_center_prefers_more_connected_person(self, test_db: Database) -> None:
         """Should select the person with most connections as default center."""
-        import yaml
         from ancestral_synth.domain.models import SpouseLink
         from ancestral_synth.export.f8vision_exporter import F8VisionExporter
         from ancestral_synth.persistence.repositories import SpouseLinkRepository
@@ -690,7 +725,30 @@ class TestF8VisionExporter:
         await exporter.export(output)
 
         output.seek(0)
-        data = yaml.safe_load(output)
+        data = json.load(output)
 
         # Parent should be selected as most central (4 connections)
-        assert data["meta"]["centeredPersonId"] == str(parent.id)
+        assert data["metadata"]["centeredPersonId"] == str(parent.id)
+
+    @pytest.mark.asyncio
+    async def test_truncate_descriptions(self, populated_db) -> None:
+        """Should truncate biography when truncate_descriptions is set."""
+        from ancestral_synth.export.f8vision_exporter import F8VisionExporter
+
+        db, father, _, _ = populated_db
+
+        exporter = F8VisionExporter(db)
+        output = StringIO()
+        await exporter.export(output, truncate_descriptions=20)
+
+        output.seek(0)
+        data = json.load(output)
+
+        # Check that truncated is in metadata
+        assert data["metadata"]["truncated"] == 20
+
+        # Find John
+        john = next(p for p in data["persons"] if p.get("given_name") == "John")
+        # Biography should be truncated to 20 chars + "..."
+        assert len(john["biography"]) == 23
+        assert john["biography"].endswith("...")

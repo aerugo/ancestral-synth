@@ -589,7 +589,7 @@ def export_f8vision(
         help="Path to database file",
     ),
     output: Path = typer.Option(
-        Path("genealogy.yaml"),
+        Path("genealogy.json"),
         "--output",
         "-o",
         help="Output file path",
@@ -617,10 +617,11 @@ def export_f8vision(
         help="Truncate description fields (biography) to this many characters",
     ),
 ) -> None:
-    """Export data to f8vision-web YAML format.
+    """Export data to f8vision-web JSON format (ancestral-synth format).
 
-    The f8vision-web format is a YAML file that can be imported into
+    The f8vision-web format is a JSON file that can be imported into
     f8vision-web for interactive 3D visualization of the family tree.
+    Includes persons, events, notes, and relationship links.
     """
     from uuid import UUID
 
