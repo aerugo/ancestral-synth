@@ -779,11 +779,17 @@ def genealogy(
         help="Output file path (prints to stdout if not specified)",
     ),
     pretty: bool = typer.Option(True, "--pretty/--compact", help="Pretty print JSON output"),
+    truncate: int | None = typer.Option(
+        None,
+        "--truncate",
+        "-t",
+        help="Truncate description fields (biography, event.description, note.content) to this many characters",
+    ),
 ) -> None:
-    """Output full genealogy data without long description fields.
+    """Output full genealogy data, optionally truncating long description fields.
 
-    Exports all persons, events, notes, and relationships as JSON,
-    but excludes the lengthy biography, event descriptions, and note content fields.
+    Exports all persons, events, notes, and relationships as JSON.
+    Use --truncate to limit the length of biography, event descriptions, and note content.
     """
     import json
     from datetime import date as date_type, datetime
@@ -799,6 +805,14 @@ def genealogy(
         SpouseLinkTable,
     )
 
+    def truncate_text(text: str | None, max_length: int | None) -> str | None:
+        """Truncate text to max_length if specified."""
+        if text is None or max_length is None:
+            return text
+        if len(text) > max_length:
+            return text[:max_length] + "..."
+        return text
+
     def json_serializer(obj: Any) -> Any:
         """Custom JSON serializer for special types."""
         if isinstance(obj, (date_type, datetime)):
@@ -808,7 +822,7 @@ def genealogy(
     async def _genealogy() -> None:
         async with Database(db_path) as db:
             async with db.session() as session:
-                # Get all persons (without biography)
+                # Get all persons
                 result = await session.exec(select(PersonTable))
                 persons = []
                 for p in result.all():
@@ -825,9 +839,10 @@ def genealogy(
                         "death_place": p.death_place,
                         "status": p.status.value if p.status else None,
                         "generation": p.generation,
+                        "biography": truncate_text(p.biography, truncate),
                     })
 
-                # Get all events (without description)
+                # Get all events
                 result = await session.exec(select(EventTable))
                 events = []
                 for e in result.all():
@@ -837,10 +852,11 @@ def genealogy(
                         "event_date": e.event_date.isoformat() if e.event_date else None,
                         "event_year": e.event_year,
                         "location": e.location,
+                        "description": truncate_text(e.description, truncate),
                         "primary_person_id": str(e.primary_person_id),
                     })
 
-                # Get all notes (without content)
+                # Get all notes
                 result = await session.exec(select(NoteTable))
                 notes = []
                 for n in result.all():
@@ -848,6 +864,7 @@ def genealogy(
                         "id": str(n.id),
                         "person_id": str(n.person_id),
                         "category": n.category.value if n.category else None,
+                        "content": truncate_text(n.content, truncate),
                         "source": n.source,
                     })
 
@@ -869,8 +886,8 @@ def genealogy(
                 "metadata": {
                     "exported_at": datetime.utcnow().isoformat(),
                     "version": "1.0",
-                    "format": "ancestral-synth-compact",
-                    "note": "Long description fields (biography, event.description, note.content) are excluded",
+                    "format": "ancestral-synth-json",
+                    "truncated": truncate,
                 },
                 "persons": persons,
                 "events": events,
