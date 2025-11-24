@@ -88,6 +88,19 @@ class PersonRepository:
         result = await self._session.exec(stmt)
         return result.one()
 
+    async def delete(self, person_id: UUID) -> bool:
+        """Delete a person record.
+
+        Note: This does NOT delete associated links. Call link repository
+        methods first to reassign or delete relationships.
+        """
+        db_person = await self.get_by_id(person_id)
+        if db_person is None:
+            return False
+        await self._session.delete(db_person)
+        await self._session.flush()
+        return True
+
     async def search_similar(
         self,
         given_name: str,
@@ -131,6 +144,32 @@ class PersonRepository:
                 func.strftime("%Y", PersonTable.birth_date).between(
                     str(birth_year - 3),
                     str(birth_year + 3),
+                )
+            )
+
+        result = await self._session.exec(stmt)
+        return list(result.all())
+
+    async def search_by_given_name_and_birth_year(
+        self,
+        given_name: str,
+        birth_year: int | None = None,
+    ) -> list[PersonTable]:
+        """Search for people by given name and optional birth year.
+
+        This is a broader search that doesn't filter by surname, useful for
+        finding married name variants where the person took their spouse's surname.
+        """
+        stmt = select(PersonTable).where(
+            PersonTable.given_name.ilike(f"%{given_name}%"),  # type: ignore[union-attr]
+        )
+
+        # If birth year provided, filter within a range
+        if birth_year is not None:
+            stmt = stmt.where(
+                func.strftime("%Y", PersonTable.birth_date).between(
+                    str(birth_year - 5),
+                    str(birth_year + 5),
                 )
             )
 
@@ -295,6 +334,97 @@ class ChildLinkRepository:
         result = await self._session.exec(stmt)
         return list(result.all())
 
+    async def get_parent_count(self, child_id: UUID) -> int:
+        """Count the number of parents for a child."""
+        stmt = select(func.count(ChildLinkTable.parent_id)).where(
+            ChildLinkTable.child_id == child_id
+        )
+        result = await self._session.exec(stmt)
+        return result.one()
+
+    async def delete(self, parent_id: UUID, child_id: UUID) -> bool:
+        """Delete a parent-child link."""
+        stmt = select(ChildLinkTable).where(
+            ChildLinkTable.parent_id == parent_id,
+            ChildLinkTable.child_id == child_id,
+        )
+        result = await self._session.exec(stmt)
+        link = result.first()
+        if link:
+            await self._session.delete(link)
+            await self._session.flush()
+            return True
+        return False
+
+    async def reassign_parent(
+        self, old_parent_id: UUID, new_parent_id: UUID, child_id: UUID
+    ) -> bool:
+        """Reassign a child's parent link from one parent to another.
+
+        Used when merging duplicate parent records.
+        """
+        # Check if new link already exists
+        if await self.exists(new_parent_id, child_id):
+            # Just delete the old link
+            return await self.delete(old_parent_id, child_id)
+
+        # Update the existing link
+        stmt = select(ChildLinkTable).where(
+            ChildLinkTable.parent_id == old_parent_id,
+            ChildLinkTable.child_id == child_id,
+        )
+        result = await self._session.exec(stmt)
+        link = result.first()
+        if link:
+            # Delete old link and create new one (SQLite doesn't support UPDATE on composite PK)
+            await self._session.delete(link)
+            await self._session.flush()
+            new_link = ChildLinkTable(parent_id=new_parent_id, child_id=child_id)
+            self._session.add(new_link)
+            await self._session.flush()
+            return True
+        return False
+
+    async def reassign_all_parent_links(
+        self, old_parent_id: UUID, new_parent_id: UUID
+    ) -> int:
+        """Reassign all child links where old_parent_id is the parent to new_parent_id.
+
+        Used when merging duplicate parent records.
+        Returns the number of links reassigned.
+        """
+        child_ids = await self.get_children(old_parent_id)
+        reassigned = 0
+        for child_id in child_ids:
+            if await self.reassign_parent(old_parent_id, new_parent_id, child_id):
+                reassigned += 1
+        return reassigned
+
+    async def reassign_all_child_links(
+        self, old_child_id: UUID, new_child_id: UUID
+    ) -> int:
+        """Reassign all parent links where old_child_id is the child to new_child_id.
+
+        Used when merging duplicate child records.
+        Returns the number of links reassigned.
+        """
+        parent_ids = await self.get_parents(old_child_id)
+        reassigned = 0
+        for parent_id in parent_ids:
+            # Check if new link already exists
+            if await self.exists(parent_id, new_child_id):
+                # Just delete the old link
+                await self.delete(parent_id, old_child_id)
+                reassigned += 1
+            else:
+                # Delete old link and create new one
+                await self.delete(parent_id, old_child_id)
+                new_link = ChildLinkTable(parent_id=parent_id, child_id=new_child_id)
+                self._session.add(new_link)
+                await self._session.flush()
+                reassigned += 1
+        return reassigned
+
 
 class SpouseLinkRepository:
     """Repository for SpouseLink operations."""
@@ -348,6 +478,56 @@ class SpouseLinkRepository:
 
         spouses = list(result1.all()) + list(result2.all())
         return spouses
+
+    async def reassign_spouse_links(
+        self, old_person_id: UUID, new_person_id: UUID
+    ) -> int:
+        """Reassign all spouse links from one person to another.
+
+        Used when merging duplicate person records.
+        Returns the number of links reassigned.
+        """
+        reassigned = 0
+
+        # Get all spouses of the old person
+        spouse_ids = await self.get_spouses(old_person_id)
+
+        for spouse_id in spouse_ids:
+            # Skip if the spouse is the new person (would be self-spouse)
+            if spouse_id == new_person_id:
+                continue
+
+            # Check if link already exists with new person
+            if not await self.exists(new_person_id, spouse_id):
+                # Create new link
+                await self.create(SpouseLink(person1_id=new_person_id, person2_id=spouse_id))
+                reassigned += 1
+
+        # Delete all old links
+        await self._delete_all_for_person(old_person_id)
+
+        return reassigned
+
+    async def _delete_all_for_person(self, person_id: UUID) -> int:
+        """Delete all spouse links for a person."""
+        deleted = 0
+
+        # Delete links where person is person1
+        stmt1 = select(SpouseLinkTable).where(SpouseLinkTable.person1_id == person_id)
+        result1 = await self._session.exec(stmt1)
+        for link in result1.all():
+            await self._session.delete(link)
+            deleted += 1
+
+        # Delete links where person is person2
+        stmt2 = select(SpouseLinkTable).where(SpouseLinkTable.person2_id == person_id)
+        result2 = await self._session.exec(stmt2)
+        for link in result2.all():
+            await self._session.delete(link)
+            deleted += 1
+
+        await self._session.flush()
+        return deleted
 
 
 class QueueRepository:

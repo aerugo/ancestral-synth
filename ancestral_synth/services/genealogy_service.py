@@ -567,6 +567,17 @@ class GenealogyService:
                 session, parent_ref, person.generation - 1, new_person=person
             )
             if parent_id and not await child_link_repo.exists(parent_id, person.id):
+                # Check if this would create >2 parents (potential duplicate)
+                parent_count = await child_link_repo.get_parent_count(person.id)
+                if parent_count >= 2:
+                    # Check for duplicates and merge if found
+                    parent_id = await self._check_and_merge_duplicate_parents(
+                        session, person.id, parent_id
+                    )
+                    # Re-check if link already exists after potential merge
+                    if await child_link_repo.exists(parent_id, person.id):
+                        continue
+
                 await child_link_repo.create(ChildLink(parent_id=parent_id, child_id=person.id))
                 # Queue parent for biography generation
                 parent = await person_repo.get_by_id(parent_id)
@@ -662,17 +673,50 @@ class GenealogyService:
             given_name, surname, reference.approximate_birth_year, maiden_name
         )
 
-        # Heuristic filtering
+        # Also search by given name + birth year only to catch married name scenarios
+        # This finds people like "Eleanor Harrison" when searching for "Eleanor Maxwell"
+        # if Eleanor Harrison married Robert Maxwell
+        broader_candidates = await person_repo.search_by_given_name_and_birth_year(
+            given_name, reference.approximate_birth_year
+        )
+
+        # Add broader candidates not already in candidates list
+        candidate_ids = {c.id for c in candidates}
+        for bc in broader_candidates:
+            if bc.id not in candidate_ids:
+                candidates.append(bc)
+                candidate_ids.add(bc.id)
+
+        # Heuristic filtering with enhanced spouse-based scoring
         good_candidates = []
+        spouse_link_repo = SpouseLinkRepository(session)
+
         for candidate in candidates:
-            score = heuristic_match_score(
+            base_score = heuristic_match_score(
                 reference.name,
                 reference.approximate_birth_year,
                 f"{candidate.given_name} {candidate.surname}",
                 candidate.birth_date.year if candidate.birth_date else None,
             )
-            if score >= 0.5:
-                good_candidates.append((candidate, score))
+
+            # If base score is low but given name matches, check spouse surnames
+            # This catches married name scenarios
+            if base_score < 0.5 and candidate.given_name.lower() == given_name.lower():
+                spouse_ids = await spouse_link_repo.get_spouses(candidate.id)
+                for spouse_id in spouse_ids:
+                    spouse = await person_repo.get_by_id(spouse_id)
+                    if spouse and spouse.surname.lower() == surname.lower():
+                        # Candidate has a spouse with the surname we're looking for
+                        # This is a strong indicator of a married name match
+                        base_score = max(base_score, 0.6)  # Bump score to pass threshold
+                        self._timer.log(
+                            f"Spouse-based match: '{candidate.given_name} {candidate.surname}' "
+                            f"has spouse '{spouse.given_name} {spouse.surname}' matching surname '{surname}'"
+                        )
+                        break
+
+            if base_score >= 0.5:
+                good_candidates.append((candidate, base_score))
 
         # If good heuristic match, use LLM to confirm
         if good_candidates:
@@ -1055,6 +1099,209 @@ class GenealogyService:
         weights = [w / total for w in weights]
 
         return random.choices(persons, weights=weights, k=1)[0]
+
+    async def _merge_persons(
+        self,
+        session,  # noqa: ANN001
+        keep_id: UUID,
+        merge_id: UUID,
+    ) -> None:
+        """Merge two person records, keeping the more complete one.
+
+        All relationships from merge_id are transferred to keep_id, then
+        merge_id is deleted.
+
+        Args:
+            session: Database session.
+            keep_id: ID of the person to keep.
+            merge_id: ID of the person to merge into keep_id and then delete.
+        """
+        person_repo = PersonRepository(session)
+        child_link_repo = ChildLinkRepository(session)
+        spouse_link_repo = SpouseLinkRepository(session)
+        queue_repo = QueueRepository(session)
+
+        keep_person = await person_repo.get_by_id(keep_id)
+        merge_person = await person_repo.get_by_id(merge_id)
+
+        if not keep_person or not merge_person:
+            logger.warning(f"Cannot merge: person(s) not found (keep={keep_id}, merge={merge_id})")
+            return
+
+        logger.info(
+            f"Merging duplicate persons: keeping '{keep_person.given_name} {keep_person.surname}' "
+            f"(ID: {keep_id}), merging '{merge_person.given_name} {merge_person.surname}' (ID: {merge_id})"
+        )
+
+        # Transfer all child links where merge_id is the parent
+        children_transferred = await child_link_repo.reassign_all_parent_links(merge_id, keep_id)
+        if children_transferred:
+            logger.info(f"  Transferred {children_transferred} child link(s)")
+
+        # Transfer all parent links where merge_id is the child
+        parents_transferred = await child_link_repo.reassign_all_child_links(merge_id, keep_id)
+        if parents_transferred:
+            logger.info(f"  Transferred {parents_transferred} parent link(s)")
+
+        # Transfer all spouse links
+        spouses_transferred = await spouse_link_repo.reassign_spouse_links(merge_id, keep_id)
+        if spouses_transferred:
+            logger.info(f"  Transferred {spouses_transferred} spouse link(s)")
+
+        # Update keep_person with any missing data from merge_person
+        updates = {}
+        if not keep_person.maiden_name and merge_person.maiden_name:
+            updates["maiden_name"] = merge_person.maiden_name
+        if not keep_person.birth_place and merge_person.birth_place:
+            updates["birth_place"] = merge_person.birth_place
+        if not keep_person.death_date and merge_person.death_date:
+            updates["death_date"] = merge_person.death_date
+        if not keep_person.death_place and merge_person.death_place:
+            updates["death_place"] = merge_person.death_place
+        if not keep_person.biography and merge_person.biography:
+            updates["biography"] = merge_person.biography
+            updates["status"] = merge_person.status
+
+        if updates:
+            await person_repo.update(keep_id, **updates)
+            logger.info(f"  Updated fields: {list(updates.keys())}")
+
+        # Remove merge_id from queue if present
+        # (QueueRepository doesn't have a remove method, so we just let it fail gracefully)
+
+        # Delete the merged person
+        await person_repo.delete(merge_id)
+        logger.info(f"  Deleted merged person record")
+
+    async def _check_and_merge_duplicate_parents(
+        self,
+        session,  # noqa: ANN001
+        child_id: UUID,
+        new_parent_id: UUID,
+    ) -> UUID:
+        """Check if adding a new parent would result in >2 parents due to duplicates.
+
+        If the child already has 2 parents and we're trying to add a third, this method
+        checks if any of the existing parents are duplicates of the new parent. If so,
+        it merges them and returns the ID of the merged parent.
+
+        Args:
+            session: Database session.
+            child_id: ID of the child.
+            new_parent_id: ID of the parent we want to add.
+
+        Returns:
+            The ID of the parent to use (may be different from new_parent_id if merged).
+        """
+        person_repo = PersonRepository(session)
+        child_link_repo = ChildLinkRepository(session)
+        spouse_link_repo = SpouseLinkRepository(session)
+
+        # Get existing parents
+        existing_parent_ids = await child_link_repo.get_parents(child_id)
+
+        # If less than 2 parents, no issue
+        if len(existing_parent_ids) < 2:
+            return new_parent_id
+
+        # Get the new parent info
+        new_parent = await person_repo.get_by_id(new_parent_id)
+        if not new_parent:
+            return new_parent_id
+
+        new_parsed = parse_name(f"{new_parent.given_name} {new_parent.surname}")
+
+        # Check each existing parent for potential duplicate
+        for existing_parent_id in existing_parent_ids:
+            existing_parent = await person_repo.get_by_id(existing_parent_id)
+            if not existing_parent:
+                continue
+
+            # Quick checks: same gender and similar generation
+            if existing_parent.gender != new_parent.gender:
+                continue
+
+            existing_parsed = parse_name(f"{existing_parent.given_name} {existing_parent.surname}")
+
+            # Check if given names match
+            if existing_parsed.given_name.lower() != new_parsed.given_name.lower():
+                continue
+
+            # Check for surname match (including maiden name scenarios)
+            surnames_match = False
+
+            # Direct surname match
+            if existing_parsed.surname.lower() == new_parsed.surname.lower():
+                surnames_match = True
+
+            # Maiden name matches
+            if existing_parent.maiden_name:
+                if existing_parent.maiden_name.lower() == new_parsed.surname.lower():
+                    surnames_match = True
+            if new_parent.maiden_name:
+                if new_parent.maiden_name.lower() == existing_parsed.surname.lower():
+                    surnames_match = True
+
+            # Check if one person's surname matches the other's spouse's surname
+            # (married name scenario)
+            if not surnames_match:
+                # Check if existing parent has a spouse with new parent's surname
+                existing_spouse_ids = await spouse_link_repo.get_spouses(existing_parent_id)
+                for spouse_id in existing_spouse_ids:
+                    spouse = await person_repo.get_by_id(spouse_id)
+                    if spouse and spouse.surname.lower() == new_parsed.surname.lower():
+                        surnames_match = True
+                        logger.info(
+                            f"Detected married name match: '{existing_parent.given_name} {existing_parent.surname}' "
+                            f"has spouse '{spouse.given_name} {spouse.surname}', matching '{new_parent.given_name} {new_parent.surname}'"
+                        )
+                        break
+
+                # Check if new parent has a spouse with existing parent's surname
+                if not surnames_match:
+                    new_spouse_ids = await spouse_link_repo.get_spouses(new_parent_id)
+                    for spouse_id in new_spouse_ids:
+                        spouse = await person_repo.get_by_id(spouse_id)
+                        if spouse and spouse.surname.lower() == existing_parsed.surname.lower():
+                            surnames_match = True
+                            logger.info(
+                                f"Detected married name match: '{new_parent.given_name} {new_parent.surname}' "
+                                f"has spouse '{spouse.given_name} {spouse.surname}', matching '{existing_parent.given_name} {existing_parent.surname}'"
+                            )
+                            break
+
+            if surnames_match:
+                # Check birth year proximity
+                birth_year_match = True
+                if existing_parent.birth_date and new_parent.birth_date:
+                    year_diff = abs(existing_parent.birth_date.year - new_parent.birth_date.year)
+                    birth_year_match = year_diff <= 5
+
+                if birth_year_match:
+                    # These are likely duplicates - merge them
+                    logger.warning(
+                        f"Detected duplicate parents for child {child_id}: "
+                        f"'{existing_parent.given_name} {existing_parent.surname}' and "
+                        f"'{new_parent.given_name} {new_parent.surname}'"
+                    )
+
+                    # Keep the one with the biography, or the existing one if neither has one
+                    if new_parent.biography and not existing_parent.biography:
+                        # Keep new, merge existing into it
+                        await self._merge_persons(session, new_parent_id, existing_parent_id)
+                        return new_parent_id
+                    else:
+                        # Keep existing, merge new into it
+                        await self._merge_persons(session, existing_parent_id, new_parent_id)
+                        return existing_parent_id
+
+        # No duplicate found, but we have 3+ parents which is invalid
+        # Log a warning but allow it (will need manual cleanup)
+        logger.warning(
+            f"Child {child_id} would have >2 parents but no duplicates detected. "
+            f"Existing: {existing_parent_ids}, New: {new_parent_id}"
+        )
+        return new_parent_id
 
     async def get_statistics(self) -> dict:
         """Get statistics about the current dataset."""
