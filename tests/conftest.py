@@ -392,6 +392,60 @@ class MockDedupAgent:
         )
 
 
+class MockCorrectionAgent:
+    """Mock correction agent for testing."""
+
+    def __init__(self, corrected_data: ExtractedData | None = None) -> None:
+        self.corrected_data = corrected_data
+        self.call_count = 0
+
+    async def correct(
+        self,
+        biography: str,
+        extracted_data: ExtractedData,
+        validation_errors: list[str],
+    ) -> Any:
+        """Return mock corrected data."""
+        from ancestral_synth.agents.correction_agent import CorrectionResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
+        self.call_count += 1
+        return CorrectionResult(
+            data=self.corrected_data or extracted_data,
+            usage=TokenUsage(input_tokens=100, output_tokens=200),
+        )
+
+
+class MockSharedEventAgent:
+    """Mock shared event agent for testing."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def analyze(
+        self,
+        existing_person_name: str,
+        existing_person_biography: str,
+        new_person_name: str,
+        new_person_biography: str,
+        relationship: Any,
+    ) -> Any:
+        """Return mock shared event analysis."""
+        from ancestral_synth.agents.shared_event_agent import SharedEventAnalysis, SharedEventAnalysisResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
+        self.call_count += 1
+        return SharedEventAnalysisResult(
+            analysis=SharedEventAnalysis(
+                should_update=False,
+                shared_events=[],
+                discovered_context=[],
+                reasoning="Mock analysis",
+            ),
+            usage=TokenUsage(input_tokens=100, output_tokens=100),
+        )
+
+
 @pytest.fixture
 def mock_biography_agent() -> MockBiographyAgent:
     """Provide a mock biography agent."""
