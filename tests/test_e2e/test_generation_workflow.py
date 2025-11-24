@@ -156,6 +156,52 @@ class MockDedupAgent:
         )
 
 
+class MockCorrectionAgent:
+    """Mock correction agent for E2E testing."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def correct(self, biography, extracted_data, validation_errors):
+        from ancestral_synth.agents.correction_agent import CorrectionResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
+        self.call_count += 1
+        return CorrectionResult(
+            data=extracted_data,
+            usage=TokenUsage(input_tokens=100, output_tokens=200),
+        )
+
+
+class MockSharedEventAgent:
+    """Mock shared event agent for E2E testing."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def analyze(
+        self,
+        existing_person_name,
+        existing_person_biography,
+        new_person_name,
+        new_person_biography,
+        relationship,
+    ):
+        from ancestral_synth.agents.shared_event_agent import SharedEventAnalysis, SharedEventAnalysisResult
+        from ancestral_synth.utils.cost_tracker import TokenUsage
+
+        self.call_count += 1
+        return SharedEventAnalysisResult(
+            analysis=SharedEventAnalysis(
+                should_update=False,
+                shared_events=[],
+                discovered_context=[],
+                reasoning="Mock analysis",
+            ),
+            usage=TokenUsage(input_tokens=100, output_tokens=100),
+        )
+
+
 class TestGenerationWorkflowE2E:
     """End-to-end tests for the complete generation workflow."""
 
@@ -174,7 +220,9 @@ class TestGenerationWorkflowE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -217,7 +265,9 @@ class TestGenerationWorkflowE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -244,7 +294,9 @@ class TestGenerationWorkflowE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -274,7 +326,9 @@ class TestGenerationWorkflowE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -305,7 +359,9 @@ class TestGenerationWorkflowE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -362,7 +418,9 @@ class TestStatisticsE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -393,7 +451,9 @@ class TestRateLimitingE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 
@@ -450,7 +510,9 @@ class TestErrorHandlingE2E:
                 db=db,
                 biography_agent=biography_agent,
                 extraction_agent=extraction_agent,
+                correction_agent=MockCorrectionAgent(),
                 dedup_agent=dedup_agent,
+                shared_event_agent=MockSharedEventAgent(),
                 rate_limiter=rate_limiter,
             )
 

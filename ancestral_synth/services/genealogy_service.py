@@ -51,6 +51,10 @@ from ancestral_synth.persistence.repositories import (
     QueueRepository,
     SpouseLinkRepository,
 )
+from ancestral_synth.services.relationship_validator import (
+    RelationshipValidator,
+    ValidationSeverity,
+)
 from ancestral_synth.services.validation import ValidationResult, Validator
 
 
@@ -66,6 +70,7 @@ class GenealogyService:
         dedup_agent: DedupAgent | None = None,
         shared_event_agent: SharedEventAgent | None = None,
         validator: Validator | None = None,
+        relationship_validator: RelationshipValidator | None = None,
         rate_limiter: RateLimiter | None = None,
         verbose: bool = False,
     ) -> None:
@@ -79,6 +84,7 @@ class GenealogyService:
             dedup_agent: Agent for deduplication.
             shared_event_agent: Agent for analyzing shared events between people.
             validator: Validator for genealogical plausibility.
+            relationship_validator: Validator for relationship consistency.
             rate_limiter: Rate limiter for LLM API calls.
             verbose: Enable verbose output with timing information.
         """
@@ -89,6 +95,7 @@ class GenealogyService:
         self._dedup_agent = dedup_agent or DedupAgent()
         self._shared_event_agent = shared_event_agent or SharedEventAgent()
         self._validator = validator or Validator()
+        self._relationship_validator = relationship_validator or RelationshipValidator()
         self._rate_limiter = rate_limiter or RateLimiter(
             RateLimitConfig(requests_per_minute=settings.llm_requests_per_minute)
         )
@@ -306,6 +313,9 @@ class GenealogyService:
                 f"Running total: {format_cost(self._cost_tracker.running_total)}"
             )
 
+        # Run relationship validation sanity checks
+        await self._run_relationship_validation(person.id)
+
         logger.info(f"Created seed person: {person.full_name} (ID: {person.id})")
         return person
 
@@ -417,6 +427,11 @@ class GenealogyService:
                     f"Running total: {format_cost(self._cost_tracker.running_total)}"
                 )
 
+        # Run relationship validation sanity checks
+        await self._run_relationship_validation(person_id)
+
+        async with self._db.session() as session:
+            person_repo = PersonRepository(session)
             # Refresh person
             db_person = await person_repo.get_by_id(person_id)
             return person_repo.to_domain(db_person)  # type: ignore[arg-type]
@@ -1302,6 +1317,41 @@ class GenealogyService:
             f"Existing: {existing_parent_ids}, New: {new_parent_id}"
         )
         return new_parent_id
+
+    async def _run_relationship_validation(self, person_id: UUID) -> None:
+        """Run relationship validation sanity checks after processing a person.
+
+        Validates the processed person and their first-degree relations for:
+        - People with more than two parents (likely duplicates)
+        - Children born after parent's death
+        - Children born before parent was old enough
+
+        Args:
+            person_id: ID of the person that was just processed.
+        """
+        self._timer.log("Running relationship validation sanity checks")
+
+        async with self._db.session() as session:
+            result = await self._relationship_validator.validate_updated_persons(
+                session, updated_person_ids=[person_id]
+            )
+
+        if result.has_issues:
+            for issue in result.issues:
+                if issue.severity == ValidationSeverity.ERROR:
+                    logger.error(f"Relationship validation error: {issue.message}")
+                else:
+                    logger.warning(f"Relationship validation warning: {issue.message}")
+
+            if result.has_errors:
+                self._timer.log(
+                    f"Found {len([i for i in result.issues if i.severity == ValidationSeverity.ERROR])} "
+                    f"validation error(s) and "
+                    f"{len([i for i in result.issues if i.severity == ValidationSeverity.WARNING])} "
+                    f"warning(s)"
+                )
+        else:
+            self._timer.log("Relationship validation passed")
 
     async def get_statistics(self) -> dict:
         """Get statistics about the current dataset."""

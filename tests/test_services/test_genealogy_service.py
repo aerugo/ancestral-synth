@@ -1,7 +1,7 @@
 """Tests for genealogy service."""
 
 from datetime import date
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -14,7 +14,38 @@ from ancestral_synth.persistence.repositories import (
     QueueRepository,
 )
 from ancestral_synth.services.genealogy_service import GenealogyService
-from tests.conftest import MockBiographyAgent, MockDedupAgent, MockExtractionAgent
+from ancestral_synth.services.relationship_validator import (
+    RelationshipValidationIssue,
+    RelationshipValidationResult,
+    RelationshipValidator,
+    ValidationAction,
+    ValidationSeverity,
+)
+from tests.conftest import (
+    MockBiographyAgent,
+    MockCorrectionAgent,
+    MockDedupAgent,
+    MockExtractionAgent,
+    MockSharedEventAgent,
+)
+
+
+class MockRelationshipValidator(RelationshipValidator):
+    """Mock relationship validator for testing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.validation_calls: list[tuple[UUID, list[UUID]]] = []
+        self.mock_result = RelationshipValidationResult(issues=[])
+
+    async def validate_updated_persons(
+        self,
+        session,
+        updated_person_ids: list[UUID],
+    ) -> RelationshipValidationResult:
+        """Track validation calls."""
+        self.validation_calls.append((updated_person_ids[0] if updated_person_ids else None, list(updated_person_ids)))
+        return self.mock_result
 
 
 class TestGenealogyServiceHelpers:
@@ -156,7 +187,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         person = await service.process_next()
@@ -203,7 +236,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         person = await service.process_next()
@@ -245,7 +280,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         await service.process_next()
@@ -287,7 +324,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         person = await service.process_next()
@@ -324,7 +363,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         await service.process_next()
@@ -357,7 +398,9 @@ class TestGenealogyServiceIntegration:
             db=test_db,
             biography_agent=MockBiographyAgent(),
             extraction_agent=MockExtractionAgent(),
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         stats = await service.get_statistics()
@@ -417,7 +460,9 @@ class TestDuplicateHandling:
             db=test_db,
             biography_agent=mock_bio_agent,
             extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
             dedup_agent=mock_dedup_agent,
+            shared_event_agent=MockSharedEventAgent(),
         )
 
         await service.process_next()
@@ -430,3 +475,140 @@ class TestDuplicateHandling:
             # Should only be the original one
             assert len(williams) == 1
             assert williams[0].id == existing_id
+
+
+class TestRelationshipValidatorIntegration:
+    """Tests for relationship validator integration."""
+
+    @pytest.mark.asyncio
+    async def test_validation_called_after_seed_person_creation(self, test_db: Database) -> None:
+        """Should call relationship validator after creating seed person."""
+        mock_bio_agent = MockBiographyAgent(
+            biography=Biography(
+                content="John Smith was born in Boston in 1950.",
+                word_count=10,
+            )
+        )
+        mock_extract_agent = MockExtractionAgent(
+            extracted_data=ExtractedData(
+                given_name="John",
+                surname="Smith",
+                gender=Gender.MALE,
+                birth_date=date(1950, 1, 1),
+            )
+        )
+        mock_rel_validator = MockRelationshipValidator()
+
+        service = GenealogyService(
+            db=test_db,
+            biography_agent=mock_bio_agent,
+            extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
+            dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
+            relationship_validator=mock_rel_validator,
+        )
+
+        person = await service.process_next()
+
+        # Relationship validator should have been called
+        assert len(mock_rel_validator.validation_calls) == 1
+        # The person's ID should be in the validated IDs
+        validated_ids = mock_rel_validator.validation_calls[0][1]
+        assert person.id in validated_ids
+
+    @pytest.mark.asyncio
+    async def test_validation_called_after_queued_person_processing(self, test_db: Database) -> None:
+        """Should call relationship validator after processing queued person."""
+        # First, create a pending person and add to queue
+        async with test_db.session() as session:
+            person_repo = PersonRepository(session)
+            queue_repo = QueueRepository(session)
+
+            pending_person = Person(
+                given_name="Jane",
+                surname="Doe",
+                gender=Gender.FEMALE,
+                status=PersonStatus.QUEUED,
+            )
+            await person_repo.create(pending_person)
+            await queue_repo.enqueue(pending_person.id)
+            pending_id = pending_person.id
+
+        mock_bio_agent = MockBiographyAgent(
+            biography=Biography(
+                content="Jane Doe was born in New York in 1960.",
+                word_count=10,
+            )
+        )
+        mock_extract_agent = MockExtractionAgent(
+            extracted_data=ExtractedData(
+                given_name="Jane",
+                surname="Doe",
+                gender=Gender.FEMALE,
+                birth_date=date(1960, 1, 1),
+            )
+        )
+        mock_rel_validator = MockRelationshipValidator()
+
+        service = GenealogyService(
+            db=test_db,
+            biography_agent=mock_bio_agent,
+            extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
+            dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
+            relationship_validator=mock_rel_validator,
+        )
+
+        person = await service.process_next()
+
+        # Relationship validator should have been called
+        assert len(mock_rel_validator.validation_calls) == 1
+        # The person's ID should be in the validated IDs
+        validated_ids = mock_rel_validator.validation_calls[0][1]
+        assert pending_id in validated_ids
+
+    @pytest.mark.asyncio
+    async def test_validation_logs_issues(self, test_db: Database) -> None:
+        """Should log validation issues when found."""
+        mock_bio_agent = MockBiographyAgent(
+            biography=Biography(
+                content="John Smith was born in Boston in 1950.",
+                word_count=10,
+            )
+        )
+        mock_extract_agent = MockExtractionAgent(
+            extracted_data=ExtractedData(
+                given_name="John",
+                surname="Smith",
+                gender=Gender.MALE,
+                birth_date=date(1950, 1, 1),
+            )
+        )
+        mock_rel_validator = MockRelationshipValidator()
+        # Set up mock to return issues
+        mock_rel_validator.mock_result = RelationshipValidationResult(
+            issues=[
+                RelationshipValidationIssue(
+                    person_id=uuid4(),
+                    severity=ValidationSeverity.WARNING,
+                    message="Test warning issue",
+                    action=ValidationAction.LOG,
+                )
+            ]
+        )
+
+        service = GenealogyService(
+            db=test_db,
+            biography_agent=mock_bio_agent,
+            extraction_agent=mock_extract_agent,
+            correction_agent=MockCorrectionAgent(),
+            dedup_agent=MockDedupAgent(),
+            shared_event_agent=MockSharedEventAgent(),
+            relationship_validator=mock_rel_validator,
+        )
+
+        # Should not raise even with validation issues
+        person = await service.process_next()
+        assert person is not None
